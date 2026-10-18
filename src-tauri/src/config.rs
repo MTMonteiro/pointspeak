@@ -156,7 +156,7 @@ fn backend_changed_in_background(app: &AppHandle, model_changed: bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use pointspeak_core::config::{Language, ModelId};
+    use pointspeak_core::config::{Language, ModelId, OutputMode};
     use pointspeak_core::hotkey::HotkeyMode;
 
     #[test]
@@ -178,6 +178,7 @@ mod tests {
             language: Language::Auto,
             hotkey: "Ctrl+Shift+Space".into(),
             hotkey_mode: HotkeyMode::Toggle,
+            output_mode: OutputMode::Clipboard,
             ..AppConfig::default()
         };
         save_to(&path, &config).unwrap();
@@ -185,6 +186,7 @@ mod tests {
         assert!(!path.with_extension("json.tmp").exists());
         let text = fs::read_to_string(&path).unwrap();
         assert!(text.contains(r#""hotkeyMode": "toggle""#));
+        assert!(text.contains(r#""outputMode": "clipboard""#));
     }
 
     #[test]
@@ -219,6 +221,8 @@ mod tests {
         assert_eq!(config.language, Language::En);
         // Atalho inválido no arquivo volta ao padrão sem perder o resto.
         assert_eq!(config.hotkey, "Alt+Z");
+        // Arquivo de antes do `outputMode` continua colando.
+        assert_eq!(config.output_mode, OutputMode::Paste);
     }
 
     #[test]

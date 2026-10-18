@@ -2,7 +2,7 @@ use std::collections::HashSet;
 use std::fs;
 use std::path::PathBuf;
 
-use pointspeak_core::config::{AppConfig, Backend, Language, ModelId};
+use pointspeak_core::config::{AppConfig, Backend, Language, ModelId, OutputMode};
 use pointspeak_core::dictation::ModelStatus;
 use pointspeak_core::events::{
     AudioLevelPayload, EngineStatusPayload, ErrorKind, ModelProgressPayload, StateChangedPayload,
@@ -57,6 +57,7 @@ fn current_contracts() -> Value {
         silence_timeout_ms: 2_500,
         backend: Backend::Directml,
         max_recording_secs: 180,
+        output_mode: OutputMode::Clipboard,
     };
     let engine = EngineStatusPayload {
         model: Some(ModelId::Tiny),

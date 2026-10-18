@@ -72,6 +72,7 @@ Abra um editor de texto (Bloco de Notas / gedit / Kate) com o cursor numa linha 
 | 3.6 | **Silêncio:** Toggle, tocar, falar uma frase e ficar calado | Para sozinho ~2,5 s depois da fala e cola (com o Silero VAD ativo, veja 8.7) | ☐ | ☐ | ☐ |
 | 3.7 | Apertar `Alt+Z` durante `Transcrevendo...` | Ignorado; o ditado em curso termina normalmente | ☐ | ☐ | ☐ |
 | 3.8 | Ditar em português e em inglês (Idioma `Automático`) | Os dois saem certos | ☐ | ☐ | ☐ |
+| 3.9 | **Destino do texto:** dite com Configurações → Saída em `Colar onde está o cursor` e depois em `Copiar para a área de transferência`; no modo copiar, confira que nada é colado, dê Ctrl+V manualmente e teste o Ctrl+V de novo depois | Colar: o texto entra sozinho. Copiar: o editor fica vazio, o Ctrl+V manual cola o texto ditado (e o conteúdo anterior do clipboard foi substituído), o HUD mostra o sucesso; a escolha persiste ao reabrir | ☐ | ☐ | ☐ |
 
 ## 4. Colagem e clipboard
 

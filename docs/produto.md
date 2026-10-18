@@ -78,7 +78,7 @@ Todas concluídas na versão **1.0.0** (task #808). Entre parênteses, as tasks 
 2. **Design** ✅ (#758): `docs/design/` com tokens, HUD, Configurações e protótipos.
 3. **Núcleo: áudio, estado e Whisper** ✅ (#762, #763, #764, #765): estado/config/contrato de eventos e PTT/Toggle, pipeline de áudio em memória, Model Manager com SHA-256 e engine whisper-rs.
 4. **Integração com o SO** ✅ (#772, #773, #774): HUD que segue o cursor (Win32/X11; fixo no Wayland), injector não destrutivo e orquestração (bandeja, atalho, pipeline ponta a ponta).
-5. **Telas** ✅ (#780, #781, #782, #783): HUD animado e janela de Configurações (Microfone, Modelos, Hardware, Idioma, Atalho, Sobre).
+5. **Telas** ✅ (#780, #781, #782, #783): HUD animado e janela de Configurações (Microfone, Modelos, Hardware, Idioma, Saída, Atalho, Sobre); em Saída o texto é colado no cursor ou só copiado para a área de transferência (#814).
 6. **Aceleração NPU/GPU (ort)** ✅ (#791, #792, #793, #794, #795): ONNX Runtime em tempo de execução, Silero VAD, engine Whisper ONNX (DirectML/OpenVINO/CUDA) com fallback para a CPU e o motivo real na tela.
 7. **Qualidade e empacotamento** ✅ (#805, #806, #807, #808): testes de integração e contrato Rust↔TS, pacotes Linux (.deb/AppImage), revisão de segurança/privacidade/desempenho e a entrega 1.0.0 (instaladores, README de usuário e `docs/checklist-manual.md` como roteiro de aceite).
 

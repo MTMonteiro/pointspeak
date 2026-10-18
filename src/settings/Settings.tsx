@@ -8,6 +8,7 @@ import type {
   Language,
   MicTestEndedPayload,
   MicrophoneInfo,
+  OutputMode,
   SettingsMicLevelPayload,
 } from "../lib/contract";
 import {
@@ -29,7 +30,7 @@ import { ModelSection } from "./ModelSection";
 import { useConfig } from "./useConfig";
 import "./Settings.css";
 
-type SectionId = "microfone" | "modelos" | "hardware" | "idioma" | "atalho" | "sobre";
+type SectionId = "microfone" | "modelos" | "hardware" | "idioma" | "saida" | "atalho" | "sobre";
 type MicListState = "loading" | "ready" | "empty" | "error";
 type CaptureError = { message: string; tone: "warning" | "error" };
 
@@ -38,6 +39,7 @@ const SECTIONS: { id: SectionId; label: string }[] = [
   { id: "modelos", label: "Modelos" },
   { id: "hardware", label: "Hardware" },
   { id: "idioma", label: "Idioma" },
+  { id: "saida", label: "Saída" },
   { id: "atalho", label: "Atalho" },
   { id: "sobre", label: "Sobre" },
 ];
@@ -52,6 +54,7 @@ const DEFAULT_CONFIG: AppConfig = {
   silenceTimeoutMs: 2500,
   backend: "auto",
   maxRecordingSecs: 300,
+  outputMode: "paste",
 };
 
 const INVALID_HOTKEY = "Use ao menos um modificador (Ctrl, Alt, Shift ou Super) com uma tecla.";
@@ -128,6 +131,8 @@ function Icon({ section }: { section: SectionId | "brand" }) {
       return <svg viewBox="0 0 16 16" aria-hidden="true"><rect {...common} x="3.5" y="3.5" width="9" height="9" rx="1.5"/><path {...common} d="M6 1v2.5M10 1v2.5M6 12.5V15M10 12.5V15M1 6h2.5M1 10h2.5M12.5 6H15M12.5 10H15"/></svg>;
     case "idioma":
       return <svg viewBox="0 0 16 16" aria-hidden="true"><circle {...common} cx="8" cy="8" r="6.5"/><path {...common} d="M1.5 8h13M8 1.5c2 2 2.6 4.2 2.6 6.5S10 12.5 8 14.5C6 12.5 5.4 10.3 5.4 8S6 3.5 8 1.5z"/></svg>;
+    case "saida":
+      return <svg viewBox="0 0 16 16" aria-hidden="true"><rect {...common} x="3" y="2.5" width="10" height="12" rx="1.5"/><path {...common} d="M6 2.5v-1h4v1M5.5 7h5M5.5 10h3"/></svg>;
     case "atalho":
       return <svg viewBox="0 0 16 16" aria-hidden="true"><rect {...common} x="1" y="3.5" width="14" height="9" rx="1.5"/><path {...common} d="M4 6.5h1M7.5 6.5h1M11 6.5h1M5 9.5h6"/></svg>;
     case "sobre":
@@ -518,6 +523,24 @@ export function Settings() {
                 { value: "auto", label: "Automático" },
               ]}
               onChange={(language) => void update({ language })}
+            />
+          </section>
+
+          <section className="settings-section" id="saida" aria-labelledby="section-saida" hidden={activeSection !== "saida"}>
+            <h2 id="section-saida">Saída</h2>
+            <p className="settings-lead">O que acontece com o texto depois de transcrito.</p>
+            <Segmented<OutputMode>
+              name="outputMode"
+              legend="Destino do texto"
+              value={value.outputMode}
+              disabled={config === null}
+              error={errors.outputMode}
+              hint="No modo copiar, o texto fica na área de transferência para você colar com Ctrl+V; o conteúdo anterior da área de transferência é substituído."
+              options={[
+                { value: "paste", label: "Colar onde está o cursor" },
+                { value: "clipboard", label: "Copiar para a área de transferência" },
+              ]}
+              onChange={(outputMode) => void update({ outputMode })}
             />
           </section>
 
