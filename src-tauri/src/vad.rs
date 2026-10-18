@@ -77,7 +77,8 @@ fn load_session<R: Runtime>(app: &AppHandle<R>) -> Option<Mutex<Session>> {
     };
     match open_session(environment, path) {
         Ok(session) => {
-            log::info!("Silero VAD carregado de {}", path.display());
+            // Uma linha por execução no stderr: o checklist manual confere por ela.
+            eprintln!("[pointspeak] Silero VAD carregado de {}", path.display());
             Some(Mutex::new(session))
         }
         Err(e) => {
