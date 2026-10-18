@@ -64,7 +64,23 @@ Please generate the project structure and implementation following these steps:
    - `HudOverlay.tsx`: Ultra-lightweight animated floating badge reacting to Tauri events (`recording`, `transcribing`, audio levels).
    - `Settings.tsx`: Clean dashboard for model downloading/switching, language toggle (PT/EN), and NPU/GPU device selection.
 
-**Tipo de software:** não definido
+**Tipo de software:** desktop
 
 ## Plano
 Resumo e fases do plano da Fábrica: a primeira task de cada mudança de plano atualiza esta seção.
+
+**Resumo:** PointSpeak é um utilitário desktop (Windows/Linux) em Tauri v2 que fica na bandeja do sistema e faz ditado por voz 100% local: um atalho global grava o microfone, um HUD em pílula segue o cursor mostrando gravando/transcrevendo/ok, o Whisper (whisper-rs na CPU ou ONNX Runtime com NPU/DirectML) transcreve em PT/EN e o texto é colado no app em foco, preservando o clipboard. Uma janela de configurações gerencia microfone, modelos, hardware, idioma e atalho. O Windows é entregue como instalador .exe (NSIS) gerado por compilação cruzada no runner Linux.
+
+### Fases
+1. **Fundação do projeto e checks** (atual): scaffold Tauri v2 compilando no Linux, workspace Cargo com crate núcleo testável, checks passando e build cruzado do .exe Windows provado com o esqueleto.
+2. Design.
+3. Núcleo: áudio, estado e Whisper.
+4. Integração com o SO (atalho, HUD no cursor, injeção de texto).
+5. Telas.
+6. Aceleração NPU/GPU (ort).
+7. Qualidade e empacotamento.
+
+### Decisões
+- As libs de sistema do Tauri/cpal/whisper.cpp são instaladas no runner por `scripts/setup-linux.sh`.
+- Wayland não expõe a posição global do cursor: no X11 e no Windows o HUD segue o cursor; no Wayland fica em posição fixa (centro-inferior da tela ativa) e a injeção usa `wtype`/`ydotool`.
+- Windows: código atrás de `cfg(windows)`; o instalador `.exe` (NSIS, com bootstrapper do WebView2, sem modelos) sai do runner Linux por `cargo-xwin`. O build Windows não entra nos checks; roda nas etapas que mexem em dependência nativa e no empacotamento final.
