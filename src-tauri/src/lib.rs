@@ -130,6 +130,15 @@ pub fn run() {
             if let WindowEvent::CloseRequested { api, .. } = event {
                 if window.label() == SETTINGS_WINDOW {
                     api.prevent_close();
+                    // A gravação do teste de transcrição não segue com a janela escondida (fechar o
+                    // microfone junta as threads do áudio: fora da thread principal).
+                    let app = window.app_handle().clone();
+                    std::thread::spawn(move || {
+                        if let Some(test) = app.try_state::<transcription_test::TranscriptionTest>()
+                        {
+                            test.stop_for_window_close();
+                        }
+                    });
                     let _ = window.hide();
                 }
             }

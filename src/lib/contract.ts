@@ -113,7 +113,7 @@ export type MicTestEndedPayload = {
  * rejects with the PT-BR error.
  */
 export type TranscriptionTestEndedPayload = {
-  reason: "maxDuration" | "deviceLost" | "dictation";
+  reason: "maxDuration" | "deviceLost" | "dictation" | "windowClosed";
 };
 
 /**

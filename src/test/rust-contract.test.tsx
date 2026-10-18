@@ -139,7 +139,7 @@ function isTranscriptionTestResult(value: unknown): value is TranscriptionTestRe
 }
 
 function isTranscriptionTestEnded(value: unknown): value is TranscriptionTestEndedPayload {
-  return isRecord(value) && isOneOf(value.reason, ["maxDuration", "deviceLost", "dictation"]);
+  return isRecord(value) && isOneOf(value.reason, ["maxDuration", "deviceLost", "dictation", "windowClosed"]);
 }
 
 function checked<T>(value: unknown, guard: (candidate: unknown) => candidate is T, name: string): T {

@@ -3,8 +3,8 @@
 //! - **Gravação:** a mesma captura do ditado (`AudioRecorder`, 16 kHz mono f32 em memória), sem
 //!   parada por silêncio e com o limite de `transcription_test::MAX_SECS`. O nível vai por
 //!   `settings://mic-level`, como no teste de microfone, para a tela reaproveitar o medidor.
-//! - **Parada sozinha:** no limite, com o microfone perdido ou com um ditado começando, a gravação
-//!   fecha e `settings://transcription-test-ended` avisa a tela; o `stop` seguinte devolve o áudio
+//! - **Parada sozinha:** no limite, com o microfone perdido, com um ditado começando ou com a janela
+//!   fechada, a gravação fecha e `settings://transcription-test-ended` avisa a tela; o `stop` seguinte devolve o áudio
 //!   (limite) ou o erro.
 //! - **Transcrição:** o `stop` transcreve com `transcriber::transcribe` e a config atual, o mesmo
 //!   caminho do ditado. Nada é colado, digitado nem copiado.
@@ -218,12 +218,24 @@ impl TranscriptionTest {
 
     /// Um ditado vai abrir o microfone: fecha a gravação e avisa a janela.
     pub fn stop_for_dictation(&self) {
-        if end_if(&self.phase, None, |_| {
-            Err(TranscriptionTestError::Interrupted)
-        }) {
-            self.sink.ended(TranscriptionTestEndedPayload {
-                reason: TranscriptionTestEndReason::Dictation,
-            });
+        self.interrupt(
+            TranscriptionTestEndReason::Dictation,
+            TranscriptionTestError::Interrupted,
+        );
+    }
+
+    /// A janela das Configurações foi fechada (só escondida): fecha o microfone e avisa a tela, que
+    /// devolve o atalho global em vez de esperar o limite de 30 s.
+    pub fn stop_for_window_close(&self) {
+        self.interrupt(
+            TranscriptionTestEndReason::WindowClosed,
+            TranscriptionTestError::WindowClosed,
+        );
+    }
+
+    fn interrupt(&self, reason: TranscriptionTestEndReason, error: TranscriptionTestError) {
+        if end_if(&self.phase, None, |_| Err(error)) {
+            self.sink.ended(TranscriptionTestEndedPayload { reason });
         }
     }
 }
@@ -588,5 +600,24 @@ mod tests {
         test.start(None, free).unwrap();
         test.stop_for_dictation();
         test.start(None, free).unwrap();
+    }
+
+    #[test]
+    fn closing_the_window_interrupts_the_test_and_notifies() {
+        let (test, rx, _) = harness(Ok(()));
+        // Sem teste aberto, fechar a janela não emite nada.
+        test.stop_for_window_close();
+        test.start(None, free).unwrap();
+        test.stop_for_window_close();
+        assert!(!test.is_recording());
+        expect(
+            &rx,
+            &[
+                Call::Open(None),
+                Call::Finish(1),
+                Call::Ended(TranscriptionTestEndReason::WindowClosed),
+            ],
+        );
+        assert_eq!(test.stop(), Err(TranscriptionTestError::WindowClosed));
     }
 }

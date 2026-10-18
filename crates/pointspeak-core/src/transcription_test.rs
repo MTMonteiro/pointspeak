@@ -81,6 +81,8 @@ pub enum TranscriptionTestError {
     Dictating,
     #[error("O teste foi interrompido por um ditado. Tente de novo.")]
     Interrupted,
+    #[error("O teste foi interrompido porque a janela foi fechada.")]
+    WindowClosed,
     #[error("{}", .0.message())]
     Microphone(MicTestError),
     #[error("Áudio curto demais. Fale uma frase antes de parar.")]
@@ -119,6 +121,8 @@ pub enum TranscriptionTestEndReason {
     DeviceLost,
     /// Um ditado começou e precisa do microfone.
     Dictation,
+    /// A janela das Configurações foi fechada (escondida) com a gravação aberta.
+    WindowClosed,
 }
 
 /// Payload de `settings://transcription-test-ended`.
@@ -411,6 +415,17 @@ mod tests {
         assert_eq!(
             serde_json::to_value(payload).unwrap(),
             serde_json::json!({ "reason": "maxDuration" })
+        );
+        let closed = TranscriptionTestEndedPayload {
+            reason: TranscriptionTestEndReason::WindowClosed,
+        };
+        assert_eq!(
+            serde_json::to_value(closed).unwrap(),
+            serde_json::json!({ "reason": "windowClosed" })
+        );
+        assert_eq!(
+            TranscriptionTestError::WindowClosed.to_string(),
+            "O teste foi interrompido porque a janela foi fechada."
         );
     }
 }
