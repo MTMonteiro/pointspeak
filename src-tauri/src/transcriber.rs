@@ -8,7 +8,9 @@
 //! [`ensure_loaded`] monta o plano do config ([`plan`]: backend efetivo, variantes no disco) e
 //! carrega pela regra do núcleo (`pointspeak_core::engine::load_with_fallback`): se a ONNX não dá
 //! (variante não baixada, EP que não inicia, modelo que não abre), cai para o whisper.cpp na CPU e
-//! guarda o motivo, que o `engine://status` mostra. O [`EngineSlot`] do `AppState` guarda a engine
+//! guarda o motivo, que o `engine://status` mostra. No DirectML cada dispositivo (NPU, GPU) ainda
+//! passa pela verificação de sanidade ([`check_device`]): se calcula diferente da CPU numa entrada
+//! fixa, conta como falha e o próximo dispositivo assume. O [`EngineSlot`] do `AppState` guarda a engine
 //! pela chave modelo + backend efetivo e troca (hot-swap) liberando a antiga antes; o que roda de
 //! fato fica em `AppState.engine_runtime`, lido sem esperar uma transcrição em andamento.
 //! Os logs do whisper.cpp e do GGML não vão para o stdout: passam pelo `log` e só avisos e erros
@@ -19,19 +21,22 @@ use std::sync::{MutexGuard, Once};
 
 use pointspeak_core::config::{AppConfig, Backend};
 use pointspeak_core::engine::{
-    load_with_fallback, runtime_label, EnginePlan, EngineRuntime, GgmlGpu, OnnxLoadError,
+    load_with_fallback, runtime_label, sanity_checked, EnginePlan, EngineRuntime, GgmlGpu,
+    OnnxLoadError,
 };
+use pointspeak_core::models::OnnxModelInfo;
 use pointspeak_core::models::{onnx_model_ready, ModelVariant};
 use pointspeak_core::transcriber::{
     self, join_segments, language_code, EngineKey, EngineSlot, TranscribeError, TranscribeOptions,
     Transcriber,
 };
+use pointspeak_core::whisper_onnx::sanity::{probe_verdict, ProbeReference};
 use tauri::{AppHandle, Manager, Runtime};
 use whisper_rs::{
     FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters, WhisperState,
 };
 
-use crate::onnx_whisper::OrtWhisperTranscriber;
+use crate::onnx_whisper::{cpu_probe_reference, OrtWhisperTranscriber};
 use crate::{models, onnx, settings, AppState};
 
 /// Teto de threads da inferência: acima disso o ganho some e o resto do sistema engasga.
@@ -170,25 +175,29 @@ fn load_engine(
 ) -> Result<(Box<dyn Transcriber>, EngineRuntime), TranscribeError> {
     let onnx_dir = ModelVariant::Onnx.local_path(plan.model, dir);
     let ggml = ModelVariant::Ggml.local_path(plan.model, dir);
+    // Referência da CPU para a verificação de sanidade: calculada uma vez por carga (NPU e GPU
+    // usam a mesma); `None` dentro = a CPU não rodou e a verificação fica de fora.
+    let mut reference: Option<Option<ProbeReference>> = None;
     let loaded = load_with_fallback(
         plan,
         &onnx_dir,
         |backend, device| {
             let environment = onnx::environment()
                 .ok_or_else(|| OnnxLoadError::Provider("ONNX Runtime não carregado".into()))?;
-            let engine = OrtWhisperTranscriber::load(
-                environment,
-                &onnx_dir,
-                plan.model.onnx_info(),
-                backend,
-                device,
-            )
-            .inspect_err(|e| {
-                eprintln!(
-                    "[pointspeak] engine ONNX ({}): {e:?}",
-                    runtime_label(backend, device)
-                )
-            })?;
+            let info = plan.model.onnx_info();
+            let label = runtime_label(backend, device);
+            let mut engine =
+                OrtWhisperTranscriber::load(environment, &onnx_dir, info, backend, device)
+                    .inspect_err(|e| eprintln!("[pointspeak] engine ONNX ({label}): {e:?}"))?;
+            if sanity_checked(backend) {
+                let reference = reference
+                    .get_or_insert_with(|| cpu_reference(environment, &onnx_dir, info))
+                    .as_ref();
+                check_device(&mut engine, reference, &label).inspect_err(|e| {
+                    eprintln!("[pointspeak] engine ONNX ({label}): {e:?}");
+                    log::warn!("engine ONNX ({label}): {e:?}");
+                })?;
+            }
             Ok(Box::new(engine) as Box<dyn Transcriber>)
         },
         |backend| {
@@ -203,6 +212,40 @@ fn load_engine(
     log::info!("transcrição: {summary}");
     eprintln!("[pointspeak] transcrição: {summary}");
     Ok((loaded.engine, runtime))
+}
+
+/// Referência da CPU para a verificação de sanidade; se a CPU EP não roda o modelo, a verificação
+/// fica de fora (com o motivo no log) em vez de bloquear a aceleração.
+fn cpu_reference(
+    environment: &ort::environment::Environment,
+    dir: &Path,
+    info: &OnnxModelInfo,
+) -> Option<ProbeReference> {
+    cpu_probe_reference(environment, dir, info)
+        .inspect_err(|e| {
+            log::warn!("verificação de sanidade sem referência da CPU: {e}");
+            eprintln!("[pointspeak] verificação de sanidade sem referência da CPU: {e}");
+        })
+        .ok()
+}
+
+/// Verificação de sanidade de um dispositivo do DirectML: roda a entrada fixa e compara com a CPU.
+/// Erro de execução vira [`OnnxLoadError::Model`] e divergência, [`OnnxLoadError::Diverged`]; nos
+/// dois casos o `load_with_fallback` tenta o próximo dispositivo.
+fn check_device(
+    engine: &mut OrtWhisperTranscriber,
+    reference: Option<&ProbeReference>,
+    label: &str,
+) -> Result<(), OnnxLoadError> {
+    let Some(reference) = reference else {
+        return Ok(());
+    };
+    let score = engine
+        .probe_score(reference)
+        .map_err(|e| OnnxLoadError::Model(format!("verificação de sanidade: {e}")))?;
+    log::info!("verificação de sanidade ({label}): correlação {score:.4}");
+    eprintln!("[pointspeak] verificação de sanidade ({label}): correlação {score:.4}");
+    probe_verdict(score).map_err(OnnxLoadError::Diverged)
 }
 
 /// Garante a engine do config no slot e roda `f` nela. O `bool` diz se a engine foi carregada

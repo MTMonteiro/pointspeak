@@ -12,6 +12,10 @@
 //! segundo, `use_cache_branch` é verdadeiro, só os tokens novos entram em `input_ids` e os
 //! `present.*` do passo anterior viram os `past_key_values.*`. Os do encoder (atenção cruzada)
 //! saem no primeiro passo e não mudam no resto do trecho.
+//!
+//! Verificação de sanidade (DirectML): [`cpu_probe_reference`] roda a entrada fixa do núcleo
+//! (`whisper_onnx::sanity`) no mesmo modelo na CPU e [`OrtWhisperTranscriber::probe_score`] compara o
+//! dispositivo com ela; quem decide e cai para o próximo dispositivo é o `transcriber.rs`.
 
 use std::fs;
 use std::path::Path;
@@ -26,6 +30,7 @@ use pointspeak_core::engine::{DmlDevice, OnnxLoadError};
 use pointspeak_core::models::OnnxModelInfo;
 use pointspeak_core::transcriber::{TranscribeError, TranscribeOptions, Transcriber};
 use pointspeak_core::whisper_onnx::mel::N_FRAMES;
+use pointspeak_core::whisper_onnx::sanity::{self, ProbeReference};
 use pointspeak_core::whisper_onnx::{
     transcribe_chunks, DecoderStep, LogMel, WhisperModel, WhisperVocab, DEFAULT_MAX_NEW_TOKENS,
 };
@@ -120,6 +125,36 @@ impl OrtWhisperTranscriber {
     pub fn backend(&self) -> Backend {
         self.backend
     }
+
+    /// Menor correlação dos logits desta engine com os da `reference` na entrada fixa
+    /// ([`sanity::probe_score`]).
+    pub fn probe_score(&mut self, reference: &ProbeReference) -> Result<f32, TranscribeError> {
+        let (mut model, log_mel, _) = self.parts();
+        sanity::probe_score(&mut model, log_mel, reference)
+    }
+
+    fn parts(&mut self) -> (OrtModel<'_>, &LogMel, &WhisperVocab) {
+        let model = OrtModel {
+            encoder: &mut self.encoder,
+            decoder: &mut self.decoder,
+            dims: self.dims,
+            n_mels: self.log_mel.n_mels(),
+        };
+        (model, &self.log_mel, &self.vocab)
+    }
+}
+
+/// Referência da verificação de sanidade: o modelo da pasta `dir` aberto só na CPU EP, rodando a
+/// entrada fixa ([`sanity::probe_reference`]). As sessões da CPU saem da memória no fim.
+pub fn cpu_probe_reference(
+    environment: &Environment,
+    dir: &Path,
+    info: &OnnxModelInfo,
+) -> Result<ProbeReference, String> {
+    let mut cpu = OrtWhisperTranscriber::load(environment, dir, info, Backend::Cpu, None)
+        .map_err(|e| format!("{e:?}"))?;
+    let (mut model, log_mel, vocab) = cpu.parts();
+    sanity::probe_reference(&mut model, log_mel, vocab).map_err(|e| e.to_string())
 }
 
 impl Transcriber for OrtWhisperTranscriber {
@@ -128,16 +163,11 @@ impl Transcriber for OrtWhisperTranscriber {
         audio: &[f32],
         opts: &TranscribeOptions,
     ) -> Result<String, TranscribeError> {
-        let mut model = OrtModel {
-            encoder: &mut self.encoder,
-            decoder: &mut self.decoder,
-            dims: self.dims,
-            n_mels: self.log_mel.n_mels(),
-        };
+        let (mut model, log_mel, vocab) = self.parts();
         transcribe_chunks(
             &mut model,
-            &self.log_mel,
-            &self.vocab,
+            log_mel,
+            vocab,
             audio,
             opts.language,
             DEFAULT_MAX_NEW_TOKENS,
@@ -380,7 +410,9 @@ mod tests {
 
     /// Transcrição real com a variante ONNX: `ORT_DYLIB_PATH=…/libonnxruntime.so
     /// POINTSPEAK_TEST_ONNX_DIR=…/onnx-tiny POINTSPEAK_TEST_WAV=jfk.wav cargo test -p pointspeak
-    /// --lib onnx_whisper_real -- --ignored --nocapture` (WAV 16 kHz mono i16; modelo tiny).
+    /// --lib onnx_whisper_real -- --ignored --nocapture` (WAV 16 kHz mono i16; modelo tiny). Com
+    /// `POINTSPEAK_TEST_ONNX_OTHER=…/onnx-base` também confere que a verificação de sanidade reprova
+    /// um modelo que calcula diferente.
     #[test]
     #[ignore = "precisa do ONNX Runtime, do modelo ONNX e de um WAV"]
     fn onnx_whisper_real_transcribes_wav() {
@@ -414,5 +446,27 @@ mod tests {
         let text = transcriber::transcribe(&mut engine, &audio, &opts).unwrap();
         eprintln!("{text}");
         assert!(!text.is_empty());
+
+        // Verificação de sanidade: a CPU contra ela mesma passa com folga.
+        let info = ModelId::Tiny.onnx_info();
+        let reference = cpu_probe_reference(&environment, Path::new(&dir), info).unwrap();
+        let score = engine.probe_score(&reference).unwrap();
+        eprintln!("sanidade CPU × CPU: {score}");
+        assert_eq!(sanity::probe_verdict(score), Ok(()));
+        // Outro modelo (`POINTSPEAK_TEST_ONNX_OTHER`, ex. onnx-base) faz o papel do dispositivo que
+        // calcula errado: precisa reprovar.
+        if let Ok(other) = std::env::var("POINTSPEAK_TEST_ONNX_OTHER") {
+            let mut wrong = OrtWhisperTranscriber::load(
+                &environment,
+                Path::new(&other),
+                ModelId::Base.onnx_info(),
+                Backend::Cpu,
+                None,
+            )
+            .unwrap_or_else(|e| panic!("{e:?}"));
+            let score = wrong.probe_score(&reference).unwrap();
+            eprintln!("sanidade outro modelo × CPU: {score}");
+            assert!(sanity::probe_verdict(score).is_err());
+        }
     }
 }
