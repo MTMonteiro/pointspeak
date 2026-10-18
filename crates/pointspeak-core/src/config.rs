@@ -73,6 +73,17 @@ pub enum Backend {
     Vulkan,
 }
 
+/// O que fazer com o texto transcrito.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum OutputMode {
+    /// Cola no app em foco, preservando o clipboard anterior (comportamento original).
+    #[default]
+    Paste,
+    /// Só copia para a área de transferência; o texto fica lá e nenhuma tecla é simulada.
+    Clipboard,
+}
+
 /// Configuração persistida em `config.json`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
@@ -89,6 +100,7 @@ pub struct AppConfig {
     pub silence_timeout_ms: u32,
     pub backend: Backend,
     pub max_recording_secs: u32,
+    pub output_mode: OutputMode,
 }
 
 impl Default for AppConfig {
@@ -103,6 +115,7 @@ impl Default for AppConfig {
             silence_timeout_ms: 2_500,
             backend: Backend::Auto,
             max_recording_secs: 300,
+            output_mode: OutputMode::Paste,
         }
     }
 }
@@ -164,6 +177,7 @@ mod tests {
         assert_eq!(c.silence_timeout_ms, 2_500);
         assert_eq!(c.backend, Backend::Auto);
         assert_eq!(c.max_recording_secs, 300);
+        assert_eq!(c.output_mode, OutputMode::Paste);
         assert_eq!(c.validate(), Ok(()));
     }
 
@@ -181,7 +195,8 @@ mod tests {
                 "autoStopOnSilence": true,
                 "silenceTimeoutMs": 2500,
                 "backend": "auto",
-                "maxRecordingSecs": 300
+                "maxRecordingSecs": 300,
+                "outputMode": "paste"
             })
         );
     }
@@ -198,9 +213,11 @@ mod tests {
             silence_timeout_ms: 4_000,
             backend: Backend::Directml,
             max_recording_secs: 60,
+            output_mode: OutputMode::Clipboard,
         };
         let text = serde_json::to_string(&c).unwrap();
         assert!(text.contains(r#""model":"large-v3-turbo""#));
+        assert!(text.contains(r#""outputMode":"clipboard""#));
         assert!(text.contains(r#""backend":"directml""#));
         assert_eq!(serde_json::from_str::<AppConfig>(&text).unwrap(), c);
     }
@@ -217,6 +234,33 @@ mod tests {
             serde_json::from_str::<AppConfig>("{}").unwrap(),
             AppConfig::default()
         );
+    }
+
+    #[test]
+    fn file_without_output_mode_keeps_pasting() {
+        let old = r#"{
+            "microphone": null, "model": "small", "language": "pt", "hotkey": "Alt+Z",
+            "hotkeyMode": "pushToTalk", "autoStopOnSilence": true, "silenceTimeoutMs": 2500,
+            "backend": "auto", "maxRecordingSecs": 300
+        }"#;
+        let c: AppConfig = serde_json::from_str(old).unwrap();
+        assert_eq!(c.output_mode, OutputMode::Paste);
+        assert_eq!(c.model, Some(ModelId::Small));
+    }
+
+    #[test]
+    fn output_mode_json() {
+        assert_eq!(serde_json::to_value(OutputMode::Paste).unwrap(), "paste");
+        assert_eq!(
+            serde_json::to_value(OutputMode::Clipboard).unwrap(),
+            "clipboard"
+        );
+        let c: AppConfig = serde_json::from_str(r#"{ "outputMode": "clipboard" }"#).unwrap();
+        assert_eq!(c.output_mode, OutputMode::Clipboard);
+        for bad in [r#""type""#, r#""Clipboard""#, r#""""#, "1", "null"] {
+            let text = format!(r#"{{ "outputMode": {bad} }}"#);
+            assert!(serde_json::from_str::<AppConfig>(&text).is_err(), "{bad}");
+        }
     }
 
     #[test]

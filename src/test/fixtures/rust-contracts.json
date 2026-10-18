@@ -8,6 +8,7 @@
     "maxRecordingSecs": 180,
     "microphone": "USB Microphone",
     "model": "tiny",
+    "outputMode": "clipboard",
     "silenceTimeoutMs": 2500
   },
   "audioLevel": {

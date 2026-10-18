@@ -1,5 +1,6 @@
 //! Regras puras da injeção de texto (spec §4.6): qual atalho cola, em que ordem tentar os métodos
-//! de colagem e a sequência que salva e restaura o clipboard do usuário.
+//! de colagem, a sequência que salva e restaura o clipboard do usuário e a cópia simples do modo
+//! `clipboard` (`OutputMode::Clipboard`).
 //!
 //! A parte com efeito (arboard, enigo, wtype/ydotool, app em foco) fica em `src-tauri/src/injector.rs`.
 
@@ -333,6 +334,27 @@ where
             Err(PasteError::Paste(error))
         }
     }
+}
+
+/// Resultado de [`copy_to_clipboard`] quando não houve erro.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CopyOutcome {
+    /// Texto vazio (ou só espaços): o clipboard não foi tocado.
+    NothingToCopy,
+    /// O texto ficou no clipboard (o conteúdo anterior não volta).
+    Copied,
+}
+
+/// Modo `clipboard`: só põe `text` no clipboard, sem colar, sem esperar e sem restaurar.
+pub fn copy_to_clipboard<C>(clipboard: &mut C, text: &str) -> Result<CopyOutcome, ClipboardError>
+where
+    C: ClipboardLike + ?Sized,
+{
+    if text.trim().is_empty() {
+        return Ok(CopyOutcome::NothingToCopy);
+    }
+    clipboard.set_text(text)?;
+    Ok(CopyOutcome::Copied)
 }
 
 #[cfg(test)]
@@ -758,6 +780,64 @@ mod tests {
         assert!(matches!(result, Err(PasteError::SetText(_))));
         assert_eq!((pastes, pauses), (0, 4));
         // Sem colar, o clipboard volta ao conteúdo do usuário.
+        assert_eq!(
+            clipboard.content,
+            ClipboardBackup::Text("do usuário".into())
+        );
+    }
+
+    #[test]
+    fn copy_leaves_text_in_clipboard() {
+        let mut clipboard = FakeClipboard::with(ClipboardBackup::Text("do usuário".into()));
+        assert_eq!(
+            copy_to_clipboard(&mut clipboard, "ditado"),
+            Ok(CopyOutcome::Copied)
+        );
+        // Uma única escrita: nada de backup restaurado depois.
+        assert_eq!(clipboard.log, ["set_text ditado"]);
+        assert_eq!(clipboard.content, ClipboardBackup::Text("ditado".into()));
+    }
+
+    #[test]
+    fn copy_replaces_image_and_keeps_surrounding_spaces() {
+        let mut clipboard = FakeClipboard::with(ClipboardBackup::Image(ClipboardImage {
+            width: 1,
+            height: 1,
+            rgba: vec![0; 4],
+        }));
+        assert_eq!(
+            copy_to_clipboard(&mut clipboard, " olá "),
+            Ok(CopyOutcome::Copied)
+        );
+        assert_eq!(clipboard.content, ClipboardBackup::Text(" olá ".into()));
+    }
+
+    #[test]
+    fn copy_of_empty_text_does_not_touch_clipboard() {
+        for text in ["", "   ", "\n\t"] {
+            let mut clipboard = FakeClipboard::with(ClipboardBackup::Text("do usuário".into()));
+            assert_eq!(
+                copy_to_clipboard(&mut clipboard, text),
+                Ok(CopyOutcome::NothingToCopy)
+            );
+            assert!(clipboard.log.is_empty(), "{:?}", clipboard.log);
+            assert_eq!(
+                clipboard.content,
+                ClipboardBackup::Text("do usuário".into())
+            );
+        }
+    }
+
+    #[test]
+    fn copy_failure_is_returned() {
+        let mut clipboard = FakeClipboard {
+            fail_set: true,
+            ..FakeClipboard::with(ClipboardBackup::Text("do usuário".into()))
+        };
+        assert_eq!(
+            copy_to_clipboard(&mut clipboard, "ditado"),
+            Err(ClipboardError("ocupado".into()))
+        );
         assert_eq!(
             clipboard.content,
             ClipboardBackup::Text("do usuário".into())

@@ -52,7 +52,7 @@ chmod +x PointSpeak_1.0.0_amd64.AppImage
 2. Clique no ícone (ou abra o menu dele) → **Configurações…**.
 3. Em **Modelos**, baixe um modelo e clique em **Usar este**. O `base` (142 MB) é um bom começo; o `small`
    acerta mais e é mais lento; o `tiny` é o mais rápido.
-4. Em **Idioma**, escolha Português, Inglês ou Automático.
+4. Em **Idioma**, escolha Português, Inglês ou Automático. Em **Saída**, escolha se o texto é colado onde está o cursor (padrão) ou só copiado para a área de transferência, para você colar com Ctrl+V (o conteúdo anterior dela é substituído).
 5. Feche as Configurações. Quando a bandeja mostrar `Pronto (Alt+Z)`, clique onde quer escrever,
    **segure `Alt+Z`**, fale e solte. O texto é colado ali.
 
@@ -68,8 +68,8 @@ a transcrição roda (Automático, NPU/GPU via DirectML no Windows, ou CPU). Pel
   nem para logs. Não há telemetria nem conta.
 - A internet só é usada para baixar os modelos (do Hugging Face, por HTTPS), e cada arquivo é conferido
   pelo SHA-256 antes de ser usado.
-- O texto ditado passa pelo clipboard por ~50 ms para ser colado e é marcado para não entrar no histórico
-  do clipboard (Win+V no Windows, Klipper e similares no Linux).
+- O texto ditado passa pelo clipboard por ~400 ms no Windows (~50 ms no Linux) para ser colado e é marcado
+  para não entrar no histórico do clipboard (Win+V no Windows, Klipper e similares no Linux).
 
 ## Problemas comuns
 

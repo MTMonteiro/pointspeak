@@ -13,6 +13,7 @@ const CONFIG = {
   silenceTimeoutMs: 2500,
   backend: "auto",
   maxRecordingSecs: 300,
+  outputMode: "paste",
 };
 
 const MICROPHONES = [

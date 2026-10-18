@@ -20,6 +20,8 @@ export type ModelId = "tiny" | "base" | "small" | "large-v3-turbo";
 export type Language = "pt" | "en" | "auto";
 export type HotkeyMode = "pushToTalk" | "toggle";
 export type Backend = "auto" | "cpu" | "directml" | "openvino" | "cuda" | "vulkan";
+/** `paste` cola no app em foco; `clipboard` só copia o texto para a área de transferência. */
+export type OutputMode = "paste" | "clipboard";
 
 export type AppConfig = {
   microphone: string | null;
@@ -31,6 +33,7 @@ export type AppConfig = {
   silenceTimeoutMs: number;
   backend: Backend;
   maxRecordingSecs: number;
+  outputMode: OutputMode;
 };
 
 /** Shape returned by `list_microphones` (Rust `MicrophoneInfo`). */
