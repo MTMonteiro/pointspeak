@@ -20,6 +20,7 @@
 //!   o modelo ativo muda) e informa a bandeja; o ditado sem engine carregada carrega na hora (lazy).
 
 use std::collections::VecDeque;
+use std::panic::{self, AssertUnwindSafe};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex};
@@ -329,6 +330,28 @@ pub fn reload_model(app: &AppHandle) {
     }
 }
 
+/// Roda `work` numa thread `name` e manda a resposta pelo `inbox`. Se a thread não abrir ou `work`
+/// entrar em pânico, manda `failed`: o ditado nunca fica preso em "Transcrevendo…" esperando.
+fn spawn_reply(
+    name: &'static str,
+    inbox: Inbox,
+    failed: Input,
+    work: impl FnOnce() -> Input + Send + 'static,
+) {
+    let reply = inbox.clone();
+    let on_panic = failed.clone();
+    let spawned = thread::Builder::new().name(name.into()).spawn(move || {
+        let input = panic::catch_unwind(AssertUnwindSafe(work)).unwrap_or_else(|_| {
+            eprintln!("[pointspeak] {name}: pânico; o ditado segue com erro");
+            on_panic
+        });
+        reply.send(input);
+    });
+    if spawned.is_err() {
+        inbox.send(failed);
+    }
+}
+
 /// Backend real: microfone, whisper, injector, janela `hud`, bandeja e atalho.
 pub struct TauriBackend {
     app: AppHandle,
@@ -386,39 +409,35 @@ impl Backend for TauriBackend {
 
     fn transcribe(&mut self, audio: Vec<f32>, inbox: Inbox) {
         let app = self.app.clone();
-        let reply = inbox.clone();
-        let spawned = thread::Builder::new()
-            .name("pointspeak-transcribe".into())
-            .spawn(move || {
+        spawn_reply(
+            "pointspeak-transcribe",
+            inbox,
+            Input::TranscriptionFinished(Err(ErrorKind::TranscriptionFailed)),
+            move || {
                 let config = current_config(&app);
                 let result = transcriber::transcribe(&app, &config, &audio).map_err(|e| {
                     eprintln!("[pointspeak] transcrição: {e}");
                     e.kind()
                 });
-                reply.send(Input::TranscriptionFinished(result));
-            });
-        if spawned.is_err() {
-            inbox.send(Input::TranscriptionFinished(Err(
-                ErrorKind::TranscriptionFailed,
-            )));
-        }
+                Input::TranscriptionFinished(result)
+            },
+        );
     }
 
     fn inject(&mut self, text: String, inbox: Inbox) {
         let display = self.display;
-        let reply = inbox.clone();
-        let spawned = thread::Builder::new()
-            .name("pointspeak-inject".into())
-            .spawn(move || {
+        spawn_reply(
+            "pointspeak-inject",
+            inbox,
+            Input::InjectFinished(Err(ErrorKind::PasteFailed)),
+            move || {
                 let result = injector::inject(&text, display).map_err(|e| {
                     eprintln!("[pointspeak] colagem: {e}");
                     e.kind()
                 });
-                reply.send(Input::InjectFinished(result));
-            });
-        if spawned.is_err() {
-            inbox.send(Input::InjectFinished(Err(ErrorKind::PasteFailed)));
-        }
+                Input::InjectFinished(result)
+            },
+        );
     }
 
     fn show_hud(&mut self) {
@@ -790,6 +809,36 @@ mod tests {
         assert_eq!(
             machine.tray_status(),
             TrayStatus::Ready("Ctrl+Shift+Space".into())
+        );
+    }
+
+    fn reply_of(work: impl FnOnce() -> Input + Send + 'static) -> Input {
+        let (tx, rx) = mpsc::channel();
+        spawn_reply(
+            "pointspeak-test-reply",
+            Inbox(tx),
+            Input::TranscriptionFinished(Err(ErrorKind::TranscriptionFailed)),
+            work,
+        );
+        match rx.recv_timeout(WAIT).expect("resposta não veio") {
+            Msg::Input(input) => input,
+            _ => panic!("mensagem inesperada"),
+        }
+    }
+
+    #[test]
+    fn worker_reply_carries_the_result() {
+        let done = Input::TranscriptionFinished(Ok("olá".into()));
+        let expected = done.clone();
+        assert_eq!(reply_of(move || done), expected);
+    }
+
+    #[test]
+    fn worker_panic_still_replies_with_failure() {
+        let input = reply_of(|| panic!("pânico simulado na inferência"));
+        assert_eq!(
+            input,
+            Input::TranscriptionFinished(Err(ErrorKind::TranscriptionFailed))
         );
     }
 }
