@@ -1,0 +1,344 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PointSpeak — HUD (protótipo)</title>
+<style>
+  /* ===== Tokens (DESIGN.md §2). Tema claro padrão; escuro por prefers-color-scheme ou classe .t-dark ===== */
+  :root, .t-light {
+    --color-bg: #F6F7F9; --color-surface: #FFFFFF; --color-surface-2: #EEF0F3; --color-divider: #D0D7DE;
+    --color-text: #1F2328; --color-text-muted: #59636E;
+    --color-accent: #4F46E5; --color-accent-soft: #EEF0FF;
+    --color-record: #D92D20; --color-success: #1A7F37; --color-danger: #B42318; --color-warning: #9A6700;
+    --color-hud-bg: rgb(255 255 255 / 0.96); --color-hud-border: rgb(31 35 40 / 0.12);
+    --shimmer-hi: rgb(255 255 255 / 0.9);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --color-bg: #141518; --color-surface: #1C1E22; --color-surface-2: #25282D; --color-divider: #33373D;
+      --color-text: #F2F3F5; --color-text-muted: #A1A7B0;
+      --color-accent: #A5B4FC; --color-accent-soft: #262A45;
+      --color-record: #FF6B5E; --color-success: #3FB950; --color-danger: #F97066; --color-warning: #E3B341;
+      --color-hud-bg: rgb(28 30 34 / 0.94); --color-hud-border: rgb(255 255 255 / 0.10);
+      --shimmer-hi: rgb(28 30 34 / 0.85);
+    }
+  }
+  .t-dark {
+    --color-bg: #141518; --color-surface: #1C1E22; --color-surface-2: #25282D; --color-divider: #33373D;
+    --color-text: #F2F3F5; --color-text-muted: #A1A7B0;
+    --color-accent: #A5B4FC; --color-accent-soft: #262A45;
+    --color-record: #FF6B5E; --color-success: #3FB950; --color-danger: #F97066; --color-warning: #E3B341;
+    --color-hud-bg: rgb(28 30 34 / 0.94); --color-hud-border: rgb(255 255 255 / 0.10);
+    --shimmer-hi: rgb(28 30 34 / 0.85);
+  }
+  :root {
+    --font-sans: system-ui, -apple-system, "Segoe UI", Roboto, Ubuntu, Cantarell, "Noto Sans", sans-serif;
+    --font-mono: ui-monospace, "Cascadia Mono", "DejaVu Sans Mono", monospace;
+    --radius-sm: 6px; --radius-md: 10px; --radius-lg: 14px; --radius-pill: 999px;
+    --shadow-hud: 0 1px 2px rgb(0 0 0 / .18), 0 4px 10px rgb(0 0 0 / .16);
+    --ease-standard: cubic-bezier(0.2, 0, 0, 1); --ease-exit: cubic-bezier(0.3, 0, 1, 1);
+    --ease-inout: cubic-bezier(0.4, 0, 0.2, 1);
+    --dur-fast: 120ms; --dur-bar: 90ms; --dur-enter: 160ms; --dur-morph: 240ms;
+    --dur-success-fade: 400ms; --dur-pulse: 1200ms; --dur-spin: 800ms; --dur-shimmer: 1400ms;
+  }
+
+  /* ===== Página do protótipo (não faz parte do app) ===== */
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--color-bg); color: var(--color-text); font: 400 14px/20px var(--font-sans); }
+  main { max-width: 1120px; margin: 0 auto; padding: 24px 16px 48px; }
+  h1 { font-size: 22px; line-height: 28px; margin: 0 0 4px; }
+  h2 { font-size: 18px; line-height: 24px; margin: 32px 0 8px; }
+  h3 { font-size: 14px; line-height: 20px; margin: 16px 0 8px; color: var(--color-text-muted); font-weight: 600; }
+  p { margin: 0 0 8px; max-width: 72ch; }
+  .muted { color: var(--color-text-muted); }
+  code, kbd { font: 600 12px/16px var(--font-mono); background: var(--color-surface-2); padding: 1px 5px; border-radius: var(--radius-sm); }
+  a { color: var(--color-accent); }
+  :focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; }
+  .note { background: var(--color-surface); border: 1px solid var(--color-divider); border-radius: var(--radius-md); padding: 12px 16px; margin: 12px 0; }
+  .toolbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 12px 0; }
+  .toolbar button, .toolbar label { font: 500 13px/16px var(--font-sans); }
+  .toolbar button { min-height: 32px; padding: 0 12px; border-radius: var(--radius-sm); border: 1px solid var(--color-divider); background: var(--color-surface); color: var(--color-text); cursor: pointer; }
+  .toolbar button[aria-pressed="true"] { background: var(--color-accent-soft); color: var(--color-accent); border-color: var(--color-accent); }
+  .toolbar label { display: inline-flex; gap: 6px; align-items: center; }
+
+  /* Grade: tema × fundo × estado */
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(236px, 1fr)); gap: 12px; }
+  @media (min-width: 760px) { [data-gallery] { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+  .cell { border: 1px solid var(--color-divider); border-radius: var(--radius-md); overflow: hidden; background: var(--color-surface); }
+  .cell figcaption { padding: 6px 10px; font-size: 12px; line-height: 16px; color: var(--color-text-muted); border-top: 1px solid var(--color-divider); }
+  .stage { display: flex; align-items: center; justify-content: center; padding: 16px 8px; min-height: 88px; }
+  .bg-claro { background: #F3F4F6; }
+  .bg-escuro { background: #0D1117; }
+  /* "ocupado": imita app por baixo (código colorido + foto) para testar a legibilidade da pílula */
+  .bg-ocupado {
+    background:
+      repeating-linear-gradient(0deg, transparent 0 13px, rgb(255 255 255 / .06) 13px 14px),
+      linear-gradient(90deg, transparent 0 14px, #e06c75 14px 44px, transparent 44px 52px, #98c379 52px 120px, transparent 120px 128px, #61afef 128px 170px, transparent 170px) 0 10px / 100% 28px repeat-y,
+      linear-gradient(135deg, #3b2f63, #b5523b 45%, #e9c46a 70%, #2a9d8f);
+  }
+
+  /* Janela HUD: 220×56, transparente (contorno tracejado só no protótipo) */
+  .win { position: relative; width: 220px; height: 56px; flex: none; outline: 1px dashed rgb(128 128 128 / .7); outline-offset: 0; }
+  .win[data-anchor="end"] .pill { left: auto; right: 8px; }
+  .win[data-anchor="center"] .pill { left: 50%; transform: translateX(-50%); }
+
+  /* ===== Pílula do HUD (isto é o que a fase Telas implementa) ===== */
+  .pill {
+    position: absolute; top: 8px; left: 8px; height: 40px; max-width: 204px;
+    display: inline-flex; align-items: center; gap: 8px; padding: 0 14px;
+    border-radius: var(--radius-pill); background: var(--color-hud-bg); border: 1px solid var(--color-hud-border);
+    box-shadow: var(--shadow-hud); color: var(--color-text);
+    font: 500 13px/16px var(--font-sans); white-space: nowrap; overflow: hidden;
+    transition: width var(--dur-morph) var(--ease-standard);
+  }
+  .pill .txt { overflow: hidden; text-overflow: ellipsis; }
+  .pill .time { color: var(--color-text-muted); font-variant-numeric: tabular-nums; font-weight: 400; }
+  .pill .content { display: inline-flex; align-items: center; gap: 8px; animation: fade-in var(--dur-fast) var(--ease-standard) 60ms both; }
+  .pill.enter { animation: enter var(--dur-enter) var(--ease-standard) both; transform-origin: 0 0; }
+  .pill.leave { animation: leave var(--dur-success-fade) var(--ease-exit) both; }
+
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--color-record); flex: none; animation: pulse var(--dur-pulse) var(--ease-inout) infinite; }
+  .bars { display: inline-flex; align-items: center; gap: 3px; height: 20px; }
+  .bars i { display: block; width: 3px; height: 20px; border-radius: var(--radius-pill); background: var(--color-record); transform: scaleY(.2); transition: transform var(--dur-bar) linear; }
+  .spinner { width: 14px; height: 14px; border-radius: 50%; border: 2px solid var(--color-surface-2); border-top-color: var(--color-accent); border-right-color: var(--color-accent); border-bottom-color: var(--color-accent); flex: none; animation: spin var(--dur-spin) linear infinite; }
+  .dots3 { display: none; color: var(--color-accent); letter-spacing: 1px; }
+  .shimmer { background: linear-gradient(90deg, var(--color-text) 0 40%, var(--shimmer-hi) 50%, var(--color-text) 60% 100%) 0 0 / 300% 100%; -webkit-background-clip: text; background-clip: text; color: transparent; animation: shimmer var(--dur-shimmer) linear infinite; }
+  .check { width: 18px; height: 18px; border-radius: 50%; background: var(--color-success); display: grid; place-items: center; flex: none; animation: pop 160ms var(--ease-standard) both; }
+  .check svg { width: 12px; height: 12px; }
+  .pill.error { color: var(--color-danger); }
+  .pill.error svg { width: 16px; height: 16px; flex: none; }
+
+  @keyframes pulse { 0%, 100% { opacity: 1; box-shadow: 0 0 0 0 color-mix(in srgb, var(--color-record) 55%, transparent); } 50% { opacity: .7; box-shadow: 0 0 0 6px transparent; } }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  @keyframes shimmer { from { background-position: 100% 0; } to { background-position: 0 0; } }
+  @keyframes pop { from { transform: scale(.6); } to { transform: scale(1); } }
+  @keyframes fade-in { from { opacity: 0; } to { opacity: 1; } }
+  @keyframes enter { from { opacity: 0; transform: scale(.92); } to { opacity: 1; transform: scale(1); } }
+  @keyframes leave { from { opacity: 1; } to { opacity: 0; } }
+
+  /* Reduced motion (DESIGN.md §3.3); .rm simula no protótipo */
+  @media (prefers-reduced-motion: reduce) {
+    .pill, .pill *, .pill .content { animation: none !important; transition: none !important; }
+    .pill .spinner { display: none; } .pill .dots3 { display: inline; }
+    .pill .shimmer { color: var(--color-text); background: none; }
+    .pill.leave { animation: leave 120ms linear both !important; }
+  }
+  .rm .pill, .rm .pill *, .rm .pill .content { animation: none !important; transition: none !important; }
+  .rm .pill .spinner { display: none; } .rm .pill .dots3 { display: inline; }
+  .rm .pill .shimmer { color: var(--color-text); background: none; }
+  .rm .pill.leave { animation: leave 120ms linear both !important; }
+
+  /* Diagramas de posição */
+  .screens { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 16px; }
+  .screen { position: relative; height: 240px; border-radius: var(--radius-md); border: 1px solid var(--color-divider); overflow: hidden; background: linear-gradient(160deg, #dfe6ee, #c9d3df); }
+  .screen .app { position: absolute; inset: 16px 16px 44px; background: #fff; border-radius: 8px; box-shadow: 0 1px 3px rgb(0 0 0 / .2); padding: 10px 12px; color: #1F2328; font-size: 12px; }
+  .screen .taskbar { position: absolute; left: 0; right: 0; bottom: 0; height: 28px; background: rgb(20 21 24 / .85); }
+  .cursor { position: absolute; width: 16px; height: 22px; }
+  .measure { position: absolute; font: 600 11px/14px var(--font-mono); color: #4F46E5; }
+  .guide-h, .guide-v { position: absolute; background: #4F46E5; }
+  .guide-h { height: 1px; } .guide-v { width: 1px; }
+  .screen .win { position: absolute; }
+  @media (max-width: 400px) { .screen .win { transform: scale(.9); transform-origin: 0 0; } }
+</style>
+</head>
+<body>
+<main>
+  <h1>HUD em pílula</h1>
+  <p class="muted">Protótipo estático do HUD do PointSpeak. Tokens e regras em <a href="../DESIGN.md">DESIGN.md</a> §3. O contorno tracejado marca a janela <code>hud</code> de 220 × 56 px (transparente no app); só a pílula aparece.</p>
+
+  <div class="note"><strong>Idle = oculto.</strong> No estado <code>idle</code> a janela fica escondida (<code>window.hide()</code>) e o React não renderiza nada. Não existe visual de "parado".</div>
+
+  <h2>Demonstração ao vivo</h2>
+  <p class="muted">Simula o evento <code>hud://audio-level</code> a cada 30 ms e o fluxo gravando → transcrevendo → sucesso.</p>
+  <div class="toolbar" role="group" aria-label="Controles da demonstração">
+    <button type="button" data-demo="flow" aria-pressed="true">Fluxo completo</button>
+    <button type="button" data-demo="recording" aria-pressed="false">Gravando</button>
+    <button type="button" data-demo="transcribing" aria-pressed="false">Transcrevendo</button>
+    <button type="button" data-demo="success" aria-pressed="false">Sucesso</button>
+    <button type="button" data-demo="error" aria-pressed="false">Erro</button>
+    <label><input type="checkbox" id="rm"> Simular reduced-motion</label>
+  </div>
+  <div class="grid" id="demo">
+    <figure class="cell t-light" style="margin:0"><div class="stage bg-claro"><div class="win" data-live></div></div><figcaption>Tema claro · fundo claro</figcaption></figure>
+    <figure class="cell t-dark" style="margin:0"><div class="stage bg-escuro"><div class="win" data-live></div></div><figcaption>Tema escuro · fundo escuro</figcaption></figure>
+    <figure class="cell t-light" style="margin:0"><div class="stage bg-ocupado"><div class="win" data-live></div></div><figcaption>Tema claro · fundo ocupado</figcaption></figure>
+    <figure class="cell t-dark" style="margin:0"><div class="stage bg-ocupado"><div class="win" data-live></div></div><figcaption>Tema escuro · fundo ocupado</figcaption></figure>
+  </div>
+
+  <h2>Estados lado a lado</h2>
+  <p class="muted">A pílula segue o tema do sistema (<code>prefers-color-scheme</code>), não o app de baixo. Cada estado aparece sobre fundo claro, escuro e "ocupado" (simula a transparência por cima de outros apps).</p>
+  <h3>Tema claro</h3>
+  <div class="grid" data-gallery="t-light"></div>
+  <h3>Tema escuro</h3>
+  <div class="grid" data-gallery="t-dark"></div>
+
+  <h2>Posição na tela</h2>
+  <div class="screens">
+    <figure style="margin:0">
+      <div class="screen" aria-label="X11 e Windows: a pílula segue o cursor a +16, +16 px">
+        <div class="app">Documento sem título — o texto ditado entra aqui|</div>
+        <svg class="cursor" style="left:60px;top:70px" viewBox="0 0 16 22" aria-hidden="true"><path d="M1 1v17l4.5-4 3 7 3-1.3-3-6.7H15z" fill="#111" stroke="#fff" stroke-width="1.2"/></svg>
+        <div class="guide-h" style="left:61px;top:71px;width:16px"></div><span class="measure" style="left:60px;top:56px">+16</span>
+        <div class="guide-v" style="left:61px;top:71px;height:16px"></div><span class="measure" style="left:40px;top:79px">+16</span>
+        <div class="win t-light" style="left:69px;top:79px"><div class="pill"><span class="dot"></span><span class="txt">Gravando</span><span class="bars"><i style="transform:scaleY(.4)"></i><i style="transform:scaleY(.6)"></i><i style="transform:scaleY(.75)"></i><i style="transform:scaleY(.6)"></i><i style="transform:scaleY(.4)"></i></span><span class="time">0:04</span></div></div>
+        <div class="taskbar"></div>
+      </div>
+      <figcaption class="muted" style="margin-top:6px">X11 e Windows: janela em <code>cursor + (8, 8)</code>; com a margem de 8 px da janela, a pílula fica a <strong>+16, +16 px</strong> do cursor. Atualiza a ~60 Hz só enquanto visível.</figcaption>
+    </figure>
+    <figure style="margin:0">
+      <div class="screen" aria-label="Perto da borda direita a pílula inverte para a esquerda do cursor">
+        <div class="app">Perto da borda direita/inferior, o HUD vira para o outro lado.</div>
+        <svg class="cursor" style="right:24px;top:96px" viewBox="0 0 16 22" aria-hidden="true"><path d="M1 1v17l4.5-4 3 7 3-1.3-3-6.7H15z" fill="#111" stroke="#fff" stroke-width="1.2"/></svg>
+        <div class="win t-light" data-anchor="end" style="right:47px;top:104px"><div class="pill"><span class="spinner"></span><span class="dots3" aria-hidden="true">•••</span><span class="txt shimmer">Transcrevendo...</span></div></div>
+        <div class="taskbar"></div>
+      </div>
+      <figcaption class="muted" style="margin-top:6px">Borda: se <code>cursor.x + 8 + 220</code> passa da tela, a janela vai para <code>cursor.x − 8 − 220</code> e a pílula alinha à direita (<code>data-anchor="end"</code>). O mesmo vale para a borda inferior com 56 px.</figcaption>
+    </figure>
+    <figure style="margin:0">
+      <div class="screen" aria-label="Wayland: posição fixa no centro-inferior da tela">
+        <div class="app">Wayland: a posição global do cursor não é exposta, então o HUD fica fixo.</div>
+        <div class="win t-dark" data-anchor="center" style="left:calc(50% - 110px);bottom:76px"><div class="pill"><span class="dot"></span><span class="txt">Gravando</span><span class="bars"><i style="transform:scaleY(.5)"></i><i style="transform:scaleY(.8)"></i><i style="transform:scaleY(1)"></i><i style="transform:scaleY(.8)"></i><i style="transform:scaleY(.5)"></i></span><span class="time">0:12</span></div></div>
+        <div class="guide-v" style="left:50%;bottom:28px;height:48px"></div><span class="measure" style="left:calc(50% + 4px);bottom:40px">48 px</span>
+        <div class="taskbar"></div>
+      </div>
+      <figcaption class="muted" style="margin-top:6px">Wayland: <strong>não segue o cursor</strong>. Janela centralizada na tela ativa, 48 px acima da borda inferior da área de trabalho; pílula centralizada na janela (<code>data-anchor="center"</code>). Estados iguais.</figcaption>
+    </figure>
+  </div>
+
+  <h2>Medidas</h2>
+  <div class="note">
+    <p>Janela 220 × 56 (sem mudança no <code>tauri.conf.json</code>) · pílula 40 px de altura, margem 8 px, largura máx. 204 px · padding 14 px · gap 8 px · ponto 8 px · barras 3 × 20 px, gap 3 px, mínimo 4 px · spinner 14 px · check 18 px · ícone de erro 16 px.</p>
+    <p>Durações: entrada 160 ms · morph 240 ms · barras 90 ms · pulso 1200 ms · spinner 800 ms · shimmer 1400 ms · sucesso: check 160 ms + 500 ms + <strong>fade-out 400 ms</strong> · erro: 3000 ms + fade 400 ms (colagem falhou: 4000 ms; nada ouvido: 2000 ms).</p>
+  </div>
+</main>
+
+<template id="tpl-recording"><span class="dot"></span><span class="txt">Gravando</span><span class="bars"><i></i><i></i><i></i><i></i><i></i></span><span class="time">0:04</span></template>
+<template id="tpl-transcribing"><span class="spinner"></span><span class="dots3" aria-hidden="true">•••</span><span class="txt shimmer">Transcrevendo...</span></template>
+<template id="tpl-success"><span class="check"><svg viewBox="0 0 12 12" aria-hidden="true"><path d="M2.5 6.3l2.3 2.2 4.7-5" fill="none" stroke="#fff" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></span><span class="txt">Texto colado</span></template>
+<template id="tpl-error"><svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="7" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M8 4.3v4.6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><circle cx="8" cy="11.4" r="1" fill="currentColor"/></svg><span class="txt"></span></template>
+
+<script>
+  // Protótipo: monta as pílulas a partir dos templates. Nada aqui é código do app.
+  var WEIGHTS = [0.55, 0.8, 1, 0.8, 0.55];
+  var reduced = function () { return document.body.classList.contains("rm") || matchMedia("(prefers-reduced-motion: reduce)").matches; };
+
+  function setLevel(pill, level) {
+    var v = Math.min(1, Math.sqrt(Math.max(0, level)));
+    if (reduced()) v = v < 0.33 ? 0.3 : v < 0.66 ? 0.65 : 1; // 3 degraus
+    pill.querySelectorAll(".bars i").forEach(function (bar, i) {
+      bar.style.transform = "scaleY(" + Math.max(0.2, v * WEIGHTS[i]).toFixed(3) + ")";
+    });
+  }
+
+  function makePill(state, opts) {
+    opts = opts || {};
+    var pill = document.createElement("div");
+    pill.className = "pill" + (state === "error" ? " error" : "");
+    pill.setAttribute("role", "status");
+    pill.dataset.state = state;
+    var content = document.createElement("span");
+    content.className = "content";
+    content.appendChild(document.getElementById("tpl-" + state).content.cloneNode(true));
+    pill.appendChild(content);
+    if (state === "error") content.querySelector(".txt").textContent = opts.message || "Microfone indisponível";
+    if (state === "recording") setLevel(pill, opts.level || 0);
+    pill.setAttribute("aria-label", { recording: "Gravando", transcribing: "Transcrevendo", success: "Texto colado", error: opts.label || opts.message || "Microfone indisponível" }[state]);
+    return pill;
+  }
+
+  var STATES = [
+    ["recording", { level: 0 }, "recording · silêncio (nível 0)"],
+    ["recording", { level: 0.15 }, "recording · fala baixa (0,15)"],
+    ["recording", { level: 0.45 }, "recording · fala normal (0,45)"],
+    ["recording", { level: 0.9 }, "recording · fala alta (0,9)"],
+    ["transcribing", {}, "transcribing · Transcrevendo..."],
+    ["success", {}, "success · check, some em 400 ms"],
+    ["error", { message: "Microfone indisponível" }, "error · 3000 ms + fade 400 ms"],
+    ["error", { message: "Modelo não encontrado" }, "error · 3000 ms + fade 400 ms"],
+    ["error", { message: "Cole com Ctrl+V", label: "Não deu para colar; o texto está copiado, cole com Ctrl+V" }, "error · colagem falhou, 4000 ms"]
+  ];
+  var BGS = [["bg-claro", "fundo claro"], ["bg-escuro", "fundo escuro"], ["bg-ocupado", "fundo ocupado"]];
+
+  document.querySelectorAll("[data-gallery]").forEach(function (grid) {
+    STATES.forEach(function (s) {
+      BGS.forEach(function (bg) {
+        var fig = document.createElement("figure");
+        fig.className = "cell " + grid.dataset.gallery;
+        fig.style.margin = "0";
+        fig.innerHTML = '<div class="stage ' + bg[0] + '"><div class="win"></div></div><figcaption></figcaption>';
+        fig.querySelector(".win").appendChild(makePill(s[0], s[1]));
+        fig.querySelector("figcaption").textContent = s[2] + " · " + bg[1];
+        grid.appendChild(fig);
+      });
+    });
+  });
+
+  // Demonstração ao vivo
+  var lives = document.querySelectorAll("[data-live]");
+  var mode = "flow", timers = [], meter = null, t0 = 0;
+  function clear() { timers.forEach(clearTimeout); timers = []; clearInterval(meter); meter = null; }
+  function show(state, opts, enter) {
+    lives.forEach(function (win) {
+      var old = win.querySelector(".pill");
+      var pill = makePill(state, opts);
+      if (enter) pill.classList.add("enter");
+      var from = old ? old.offsetWidth : 0;
+      win.replaceChildren(pill);
+      // Morph: anima a largura da pílula antiga até a natural da nova.
+      if (from && !reduced()) {
+        var target = pill.offsetWidth;
+        pill.style.width = from + "px";
+        void pill.offsetWidth;
+        pill.style.width = target + "px";
+      }
+    });
+    if (state === "recording") {
+      t0 = Date.now();
+      var phase = 0;
+      meter = setInterval(function () {
+        phase += 0.3;
+        var speech = Math.max(0, Math.sin(phase * 0.7)) * (0.35 + Math.random() * 0.6);
+        lives.forEach(function (win) {
+          var p = win.querySelector(".pill"); if (!p) return;
+          setLevel(p, speech);
+          var s = Math.floor((Date.now() - t0) / 1000);
+          var time = p.querySelector(".time"); if (time) time.textContent = "0:" + String(s).padStart(2, "0");
+        });
+      }, 30);
+    }
+  }
+  function leave(after) {
+    lives.forEach(function (win) { var p = win.querySelector(".pill"); if (p) p.classList.add("leave"); });
+    timers.push(setTimeout(function () { lives.forEach(function (w) { w.replaceChildren(); }); after && after(); }, reduced() ? 120 : 400));
+  }
+  function run() {
+    clear();
+    lives.forEach(function (w) { w.replaceChildren(); });
+    if (mode === "flow") {
+      show("recording", { level: 0 }, true);
+      timers.push(setTimeout(function () { clearInterval(meter); show("transcribing", {}); }, 3200));
+      timers.push(setTimeout(function () { show("success", {}); }, 4800));
+      timers.push(setTimeout(function () { leave(function () { timers.push(setTimeout(run, 900)); }); }, reduced() ? 5500 : 5460));
+    } else if (mode === "success") {
+      show("success", {}, true);
+      timers.push(setTimeout(function () { leave(function () { timers.push(setTimeout(run, 900)); }); }, reduced() ? 700 : 660));
+    } else if (mode === "error") {
+      show("error", { message: "Modelo não encontrado" }, true);
+      timers.push(setTimeout(function () { leave(function () { timers.push(setTimeout(run, 900)); }); }, 3000));
+    } else {
+      show(mode, { level: 0.4 }, true);
+    }
+  }
+  document.querySelectorAll("[data-demo]").forEach(function (btn) {
+    btn.addEventListener("click", function () {
+      mode = btn.dataset.demo;
+      document.querySelectorAll("[data-demo]").forEach(function (b) { b.setAttribute("aria-pressed", String(b === btn)); });
+      run();
+    });
+  });
+  document.getElementById("rm").addEventListener("change", function (e) { document.body.classList.toggle("rm", e.target.checked); run(); });
+  run();
+</script>
+</body>
+</html>
