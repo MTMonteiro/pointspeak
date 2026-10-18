@@ -230,8 +230,8 @@ pub fn effective_backend(
 /// Payload de `engine://status` / `get_engine_status` a partir do config e do estado do ditado.
 ///
 /// Com a engine do config carregada (`runtime`), `backend`, `fallbackReason`, `device` e
-/// `deviceFallbackReason` são os dela (o que roda de fato). Sem engine carregada, `backend` é o efetivo e o motivo é só o da escolha
-/// (`engine::unavailable_fallback`).
+/// `deviceFallbackReason` são os dela (o que roda de fato). Sem engine carregada, `backend` é o
+/// efetivo e o motivo é só o da escolha (`engine::unavailable_fallback`).
 pub fn engine_status(
     config: &AppConfig,
     status: ModelStatus,

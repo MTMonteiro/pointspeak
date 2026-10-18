@@ -1,9 +1,9 @@
 //! Injeção do texto transcrito no app em foco, sem perder o clipboard do usuário (spec §4.6).
 //!
-//! [`inject`] guarda o clipboard (arboard), põe o texto, cola e, depois de
-//! [`restore_delay`](pointspeak_core::injector::restore_delay) (400 ms no Windows, 50 ms no Linux), devolve o conteúdo anterior. A
-//! sequência e as regras (atalho, ordem dos métodos) são puras e ficam em
-//! `pointspeak_core::injector`; aqui fica só o que toca o sistema.
+//! [`inject`] guarda o clipboard (arboard), põe o texto, confere lendo de volta, cola e, depois de
+//! [`restore_delay`](pointspeak_core::injector::restore_delay) (400 ms no Windows, 50 ms no
+//! Linux), devolve o conteúdo anterior. A sequência e as regras (atalho, ordem dos métodos) são
+//! puras e ficam em `pointspeak_core::injector`; aqui fica só o que toca o sistema.
 //!
 //! - **Atalho:** Shift+Insert se o app em foco é um terminal conhecido, senão Ctrl+V. O app em foco
 //!   vem do `GetForegroundWindow` → executável do processo (Windows) ou do `_NET_ACTIVE_WINDOW` →
@@ -11,8 +11,9 @@
 //! - **Colagem:** enigo no Windows e no X11 (XTest via x11rb, sem libxdo). No Wayland tenta `wtype`,
 //!   depois `ydotool` (precisa do `ydotoold` rodando), achados no `PATH`, e por fim o enigo (que só
 //!   alcança apps do XWayland).
-//! - **Falha:** se nenhum método colar, tenta restaurar o clipboard original e devolve
-//!   `ErrorKind::PasteFailed` ("Falha ao colar").
+//! - **Falha:** se o clipboard não ficar com o texto (a leitura de volta não bate) nada é colado,
+//!   para não colar o conteúdo antigo; se nenhum método colar, também. Nos dois casos tenta
+//!   restaurar o clipboard original e devolve `ErrorKind::PasteFailed` ("Falha ao colar").
 //! - **Thread:** arboard e enigo bloqueiam, então tudo roda numa thread própria
 //!   (`pointspeak-injector`), criada na primeira chamada. Ela mantém o `Clipboard` vivo: no X11 o
 //!   conteúdo do clipboard só existe enquanto o processo que o pôs o serve, então o texto (e o
@@ -42,7 +43,7 @@ use thiserror::Error;
 pub enum InjectError {
     #[error("Clipboard indisponível: {0}")]
     Clipboard(String),
-    #[error("Não foi possível colar ({0}); o texto ficou no clipboard.")]
+    #[error("Não foi possível colar ({0}); o clipboard voltou ao conteúdo anterior.")]
     Paste(String),
     #[error("O injector de texto parou inesperadamente.")]
     Worker,
@@ -55,8 +56,8 @@ impl InjectError {
     }
 }
 
-/// Cola `text` no app em foco preservando o clipboard. Bloqueia até terminar (até ~400 ms mais o tempo
-/// das teclas): chame fora da thread principal e do runtime async. Texto vazio não cola nada.
+/// Cola `text` no app em foco preservando o clipboard. Bloqueia até terminar (até ~400 ms mais o
+/// tempo das teclas): chame fora da thread principal e do runtime async. Texto vazio não cola nada.
 pub fn inject(text: &str, display: DisplayServer) -> Result<(), InjectError> {
     let (reply, result) = mpsc::channel();
     let job = Job {
@@ -411,10 +412,15 @@ mod tests {
     }
 
     #[test]
-    fn paste_error_says_text_stayed_in_clipboard() {
+    fn paste_error_says_the_clipboard_was_restored() {
+        // A sequência restaura o clipboard quando a colagem falha: o texto não fica nele.
         let msg = InjectError::Paste("wtype: não encontrado no PATH".into()).to_string();
         assert!(msg.contains("wtype"), "{msg}");
-        assert!(msg.contains("clipboard"), "{msg}");
+        assert!(
+            msg.contains("clipboard voltou ao conteúdo anterior"),
+            "{msg}"
+        );
+        assert!(!msg.contains("ficou no clipboard"), "{msg}");
     }
 
     #[test]

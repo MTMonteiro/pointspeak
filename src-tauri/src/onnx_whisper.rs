@@ -3,8 +3,8 @@
 //! Lê a variante ONNX do modelo (`onnx-<id>/`: `encoder_model_fp16.onnx`,
 //! `decoder_model_merged_fp16.onnx`, `vocab.json`, `added_tokens.json`) e cria as duas sessões
 //! com a execution provider do backend efetivo: DirectML (`DmlExecutionProvider`, no dispositivo
-//! pedido: NPU ou GPU, na ordem do núcleo, `engine::DmlDevice::ORDER`), OpenVINO ou CUDA. A CPU EP do ONNX Runtime fica sempre por baixo e roda o que a EP não
-//! suporta. O log-mel, os tokens e a decodificação gulosa vêm do núcleo
+//! pedido: NPU ou GPU, na ordem do núcleo, `engine::DmlDevice::ORDER`), OpenVINO ou CUDA. A CPU EP
+//! do ONNX Runtime fica sempre por baixo e roda o que a EP não suporta. O log-mel, os tokens e a decodificação gulosa vêm do núcleo
 //! (`pointspeak_core::whisper_onnx`); aqui só entram as sessões e o KV cache.
 //!
 //! KV cache do `decoder_model_merged`: no primeiro passo de um trecho `use_cache_branch` é falso e

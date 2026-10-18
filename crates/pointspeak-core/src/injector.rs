@@ -485,7 +485,8 @@ mod tests {
         /// Só a primeira escrita (o texto transcrito) funciona; a restauração falha.
         fail_restore: bool,
         writes: usize,
-        /// A escrita "funciona", mas a leitura segue devolvendo o conteúdo antigo.
+        /// Depois da primeira escrita, as próximas `stale_reads` leituras devolvem o conteúdo antigo
+        /// (a escrita "funciona", mas o clipboard não fica com o texto).
         stale_reads: usize,
     }
 
@@ -509,7 +510,7 @@ mod tests {
 
     impl ClipboardLike for FakeClipboard {
         fn get_text(&mut self) -> Option<String> {
-            if self.stale_reads > 0 {
+            if self.writes > 0 && self.stale_reads > 0 {
                 self.stale_reads -= 1;
                 return Some("antigo".into());
             }
@@ -756,13 +757,17 @@ mod tests {
         );
         assert!(matches!(result, Err(PasteError::SetText(_))));
         assert_eq!((pastes, pauses), (0, 4));
+        // Sem colar, o clipboard volta ao conteúdo do usuário.
+        assert_eq!(
+            clipboard.content,
+            ClipboardBackup::Text("do usuário".into())
+        );
     }
 
     #[test]
     fn retries_until_the_clipboard_has_the_text() {
         let mut clipboard = FakeClipboard::with(ClipboardBackup::Text("do usuário".into()));
-        // A primeira leitura é a do backup.
-        clipboard.stale_reads = 3;
+        clipboard.stale_reads = 2;
         let mut pauses = 0;
         let result = paste_preserving_clipboard_retrying(
             &mut clipboard,
@@ -774,6 +779,10 @@ mod tests {
         );
         assert_eq!(result, Ok(PasteOutcome::Pasted));
         assert_eq!(pauses, 2);
+        assert_eq!(
+            clipboard.content,
+            ClipboardBackup::Text("do usuário".into())
+        );
     }
 
     #[test]

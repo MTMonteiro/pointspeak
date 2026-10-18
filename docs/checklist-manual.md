@@ -83,7 +83,7 @@ Abra um editor de texto (Bloco de Notas / gedit / Kate) com o cursor numa linha 
 | 4.4 | Ditar num navegador (campo de busca) | O texto entra no campo | ☐ | ☐ | ☐ |
 | 4.5 | Wayland sem `wtype`/`ydotool` | HUD mostra `Falha ao colar` por ~4 s; o clipboard original é restaurado | — | — | ☐ |
 | 4.6 | Com o histórico do clipboard ligado (Win+V no Windows; Klipper/KDE ou outro gerenciador no Linux), ditar uma frase e abrir o histórico | A frase ditada não aparece no histórico (nem na sincronização na nuvem do Windows); o texto colado entra normalmente no app | ☐ | ☐ | ☐ |
-| 4.7 | **Windows, colagem com clipboard ocupado:** copie um texto qualquer (ex.: "texto antigo"), dite uma frase com o `large-v3-turbo` num navegador e num editor (VS Code/Notepad) | Entra a frase **ditada**, nunca o "texto antigo"; ~400 ms depois o clipboard volta ao "texto antigo" (cole num campo para conferir). Se o clipboard estiver travado por outro app, o HUD mostra a falha de clipboard em vez de colar o texto antigo | ☐ | — | — |
+| 4.7 | **Windows, colagem com clipboard ocupado:** copie um texto qualquer (ex.: "texto antigo"), dite uma frase com o `large-v3-turbo` num navegador e num editor (VS Code/Notepad) | Entra a frase **ditada**, nunca o "texto antigo"; ~400 ms depois o clipboard volta ao "texto antigo" (cole num campo para conferir). Se o clipboard estiver travado por outro app, o HUD mostra `Falha ao colar` (nada é colado) e o clipboard volta ao "texto antigo" | ☐ | — | — |
 
 ## 5. HUD
 
