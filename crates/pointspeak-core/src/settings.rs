@@ -34,6 +34,10 @@ pub const REASON_NO_VULKAN: &str = "Driver Vulkan não encontrado";
 pub const REASON_NO_NVIDIA: &str = "Nenhuma GPU NVIDIA encontrada";
 /// Vulkan sem a feature `vulkan` do whisper.cpp (build padrão e .exe).
 pub const REASON_NOT_INCLUDED: &str = "Não incluído nesta versão";
+/// `detail` do cartão DirectML com NPU (seguido do fabricante, quando informado).
+pub const DIRECTML_NPU_DETAIL: &str = "NPU detectada";
+/// `detail` do cartão DirectML só com GPU.
+pub const DIRECTML_GPU_DETAIL: &str = "Sem NPU · GPU";
 /// `detail` do cartão da CPU.
 pub const CPU_DETAIL: &str = "Sempre disponível";
 
@@ -44,6 +48,8 @@ pub struct ProviderProbe {
     pub backend: Backend,
     /// Nome do dispositivo, quando a API do ONNX Runtime informa.
     pub device: Option<String>,
+    /// Só no DirectML: a EP registrou com `DeviceFilter::Npu` (há uma NPU DirectX 12).
+    pub npu: bool,
 }
 
 /// O que o carregamento do ONNX Runtime informou.
@@ -178,12 +184,27 @@ fn onnx_provider(
         OnnxRuntimeStatus::Loaded { providers } => providers,
     };
     match providers.iter().find(|p| p.backend == backend) {
+        Some(p) if backend == Backend::Directml => Ok(Some(directml_detail(p))),
         Some(p) => Ok(p.device.clone()),
         None => Err(match backend {
             Backend::Directml => REASON_NO_DIRECTML,
             Backend::Openvino => REASON_NO_INTEL,
             _ => REASON_NO_NVIDIA,
         }),
+    }
+}
+
+/// `detail` do cartão DirectML: se há NPU (a engine tenta ela primeiro) e o fabricante, quando o
+/// ONNX Runtime informa.
+fn directml_detail(probe: &ProviderProbe) -> String {
+    let head = if probe.npu {
+        DIRECTML_NPU_DETAIL
+    } else {
+        DIRECTML_GPU_DETAIL
+    };
+    match &probe.device {
+        Some(device) => format!("{head} · {device}"),
+        None => head.to_string(),
     }
 }
 
@@ -208,8 +229,8 @@ pub fn effective_backend(
 
 /// Payload de `engine://status` / `get_engine_status` a partir do config e do estado do ditado.
 ///
-/// Com a engine do config carregada (`runtime`), `backend` e `fallbackReason` são os dela (o que
-/// roda de fato). Sem engine carregada, `backend` é o efetivo e o motivo é só o da escolha
+/// Com a engine do config carregada (`runtime`), `backend`, `fallbackReason`, `device` e
+/// `deviceFallbackReason` são os dela (o que roda de fato). Sem engine carregada, `backend` é o efetivo e o motivo é só o da escolha
 /// (`engine::unavailable_fallback`).
 pub fn engine_status(
     config: &AppConfig,
@@ -233,6 +254,10 @@ pub fn engine_status(
         backend,
         paused,
         fallback_reason: fallback.map(|f| f.message()),
+        device: runtime.and_then(|r| r.device),
+        device_fallback_reason: runtime
+            .and_then(|r| r.device_fallback.as_ref())
+            .map(|f| f.message()),
     }
 }
 
@@ -292,7 +317,7 @@ pub fn file_manager(os: TargetOs) -> &'static str {
 mod tests {
     use super::*;
     use crate::config::ModelId;
-    use crate::engine::{EngineKind, FallbackReason};
+    use crate::engine::{DeviceFallback, DmlDevice, EngineKind, FallbackReason, OnnxLoadError};
     use serde_json::json;
 
     fn reasons(os: TargetOs, probe: &HardwareProbe) -> Vec<(Backend, Option<String>)> {
@@ -320,6 +345,7 @@ mod tests {
                     .map(|&(backend, device)| ProviderProbe {
                         backend,
                         device: device.map(str::to_string),
+                        npu: false,
                     })
                     .collect(),
             },
@@ -400,10 +426,39 @@ mod tests {
             &loaded(&[(Backend::Directml, Some("NVIDIA"))]),
         );
         assert!(options[0].available);
-        assert_eq!(options[0].detail.as_deref(), Some("NVIDIA"));
+        assert_eq!(options[0].detail.as_deref(), Some("Sem NPU · GPU · NVIDIA"));
         assert_eq!(options[1].reason.as_deref(), Some(REASON_NO_INTEL));
         assert_eq!(options[3].reason.as_deref(), Some(REASON_NO_NVIDIA));
         assert_eq!(options[4].detail.as_deref(), Some(CPU_DETAIL));
+    }
+
+    #[test]
+    fn directml_card_says_whether_there_is_an_npu() {
+        let probe = |npu: bool, device: Option<&str>| HardwareProbe {
+            onnx: OnnxRuntimeStatus::Loaded {
+                providers: vec![ProviderProbe {
+                    backend: Backend::Directml,
+                    device: device.map(str::to_string),
+                    npu,
+                }],
+            },
+            vulkan: VulkanStatus::NotIncluded,
+        };
+        let detail = |npu, device| {
+            let options = backend_options(TargetOs::Windows, &probe(npu, device));
+            assert!(options[0].available, "DirectML disponível com ou sem NPU");
+            options[0].detail.clone()
+        };
+        assert_eq!(
+            detail(true, Some("Intel")).as_deref(),
+            Some("NPU detectada · Intel")
+        );
+        assert_eq!(detail(true, None).as_deref(), Some(DIRECTML_NPU_DETAIL));
+        assert_eq!(
+            detail(false, Some("AMD")).as_deref(),
+            Some("Sem NPU · GPU · AMD")
+        );
+        assert_eq!(detail(false, None).as_deref(), Some(DIRECTML_GPU_DETAIL));
     }
 
     #[test]
@@ -549,6 +604,8 @@ mod tests {
                 backend: Backend::Cpu,
                 paused: false,
                 fallback_reason: Some(REASON_NOT_INCLUDED.to_string()),
+                device: None,
+                device_fallback_reason: None,
             }
         );
         let none = engine_status(
@@ -611,8 +668,36 @@ mod tests {
             backend: Backend::Directml,
             kind: EngineKind::Onnx,
             fallback: None,
+            device: None,
+            device_fallback: None,
         };
         assert_eq!(status(Some(&running)), before);
+        // DirectML na GPU depois de a NPU falhar: dispositivo e aviso informativo, sem fallback.
+        let gpu = EngineRuntime {
+            device: Some(DmlDevice::Gpu),
+            device_fallback: Some(DeviceFallback {
+                failed: DmlDevice::Npu,
+                used: DmlDevice::Gpu,
+                error: OnnxLoadError::Model("op sem suporte".into()),
+            }),
+            ..running.clone()
+        };
+        let on_gpu = status(Some(&gpu));
+        assert_eq!(on_gpu.backend, Backend::Directml);
+        assert_eq!(on_gpu.fallback_reason, None);
+        assert_eq!(on_gpu.device, Some(DmlDevice::Gpu));
+        assert_eq!(
+            on_gpu.device_fallback_reason.as_deref(),
+            Some("NPU não carregou o modelo ONNX: op sem suporte. Usando a GPU.")
+        );
+        let on_npu = EngineRuntime {
+            device: Some(DmlDevice::Npu),
+            ..running.clone()
+        };
+        assert_eq!(
+            serde_json::to_value(status(Some(&on_npu))).unwrap()["device"],
+            json!("npu")
+        );
         // Fallback para o whisper.cpp na CPU: backend real e o motivo.
         let fallback = EngineRuntime {
             backend: Backend::Cpu,
@@ -621,6 +706,8 @@ mod tests {
                 backend: Backend::Directml,
                 error: "0x887A0004".into(),
             }),
+            device: None,
+            device_fallback: None,
         };
         let after = status(Some(&fallback));
         assert_eq!(after.backend, Backend::Cpu);
