@@ -1,0 +1,317 @@
+/* A janela HUD é transparente; somente a pílula ocupa espaço visual. */
+html,
+body {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  background: transparent;
+}
+
+#root,
+.hud-overlay {
+  width: 100%;
+  height: 100%;
+}
+
+.hud-overlay {
+  position: relative;
+  pointer-events: none;
+}
+
+.hud-pill-position {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.hud-pill-position[data-anchor="end"] .hud-pill {
+  right: 8px;
+  left: auto;
+  transform-origin: right top;
+}
+
+.hud-pill-position[data-anchor="center"] .hud-pill {
+  left: 50%;
+  transform: translateX(-50%);
+  transform-origin: center top;
+}
+
+.hud-pill {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  display: inline-flex;
+  align-items: center;
+  height: 40px;
+  max-width: 204px;
+  padding: 0 14px;
+  overflow: hidden;
+  border: 1px solid var(--color-hud-border);
+  border-radius: var(--radius-pill);
+  background: var(--color-hud-bg);
+  box-shadow: var(--shadow-hud);
+  color: var(--color-text);
+  font: 500 13px/16px var(--font-sans);
+  white-space: nowrap;
+  transition: width var(--dur-morph) var(--ease-standard);
+}
+
+.hud-pill[data-state="recording"] {
+  width: 184px;
+}
+
+.hud-pill[data-state="transcribing"] {
+  width: 172px;
+}
+
+.hud-pill[data-state="success"] {
+  width: 137px;
+}
+
+.hud-pill-position[data-entering="true"] .hud-pill {
+  animation: hud-enter var(--dur-enter) var(--ease-standard) both;
+  transform-origin: left top;
+}
+
+.hud-pill-position[data-anchor="end"][data-entering="true"] .hud-pill {
+  transform-origin: right top;
+}
+
+.hud-pill-position[data-anchor="center"][data-entering="true"] .hud-pill {
+  animation-name: hud-enter-center;
+  transform-origin: center top;
+}
+
+.hud-pill-position[data-leaving="true"] .hud-pill {
+  animation: hud-leave var(--hud-leave-duration) var(--ease-exit) var(--hud-leave-delay) both;
+}
+
+.hud-content {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  max-width: 100%;
+  animation: hud-fade-in var(--dur-fast) var(--ease-standard) 60ms both;
+}
+
+.hud-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.hud-pulse-dot {
+  width: 8px;
+  height: 8px;
+  flex: none;
+  border-radius: 50%;
+  background: var(--color-record);
+  animation: hud-pulse var(--dur-pulse) var(--ease-inout) infinite;
+}
+
+.hud-level-bars {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 3px;
+  height: 20px;
+}
+
+.hud-level-bar {
+  display: block;
+  width: 3px;
+  height: 20px;
+  flex: none;
+  border-radius: var(--radius-pill);
+  background: var(--color-record);
+  transform-origin: center;
+  transition: transform var(--dur-bar) linear;
+}
+
+.hud-recording-time {
+  flex: none;
+  color: var(--color-text-muted);
+  font-variant-numeric: tabular-nums;
+  font-weight: 400;
+}
+
+.hud-spinner {
+  width: 14px;
+  height: 14px;
+  flex: none;
+  border: 2px solid var(--color-surface-2);
+  border-top-color: var(--color-accent);
+  border-right-color: var(--color-accent);
+  border-bottom-color: var(--color-accent);
+  border-radius: 50%;
+  animation: hud-spin var(--dur-spin) linear infinite;
+}
+
+.hud-dots {
+  display: none;
+  flex: none;
+  color: var(--color-accent);
+  letter-spacing: 1px;
+}
+
+.hud-shimmer {
+  background: linear-gradient(
+      90deg,
+      var(--color-text) 0 40%,
+      var(--shimmer-highlight) 50%,
+      var(--color-text) 60% 100%
+    )
+    0 0 / 300% 100%;
+  background-clip: text;
+  color: transparent;
+  animation: hud-shimmer var(--dur-shimmer) linear infinite;
+}
+
+.hud-success-check {
+  display: grid;
+  width: 18px;
+  height: 18px;
+  flex: none;
+  place-items: center;
+  border-radius: 50%;
+  background: var(--color-success);
+  animation: hud-pop 160ms var(--ease-standard) both;
+}
+
+.hud-success-check svg {
+  width: 12px;
+  height: 12px;
+}
+
+.hud-error-pill {
+  color: var(--color-danger);
+}
+
+.hud-error-icon {
+  width: 16px;
+  height: 16px;
+  flex: none;
+}
+
+.hud-error-message {
+  color: var(--color-danger);
+}
+
+@keyframes hud-pulse {
+  0%,
+  100% {
+    opacity: 1;
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--color-record) 55%, transparent);
+  }
+  50% {
+    opacity: 0.7;
+    box-shadow: 0 0 0 6px transparent;
+  }
+}
+
+@keyframes hud-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes hud-shimmer {
+  from {
+    background-position: 100% 0;
+  }
+  to {
+    background-position: 0 0;
+  }
+}
+
+@keyframes hud-pop {
+  from {
+    transform: scale(0.6);
+  }
+  to {
+    transform: scale(1);
+  }
+}
+
+@keyframes hud-fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes hud-enter {
+  from {
+    opacity: 0;
+    transform: scale(0.92);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@keyframes hud-enter-center {
+  from {
+    opacity: 0;
+    transform: translateX(-50%) scale(0.92);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(-50%) scale(1);
+  }
+}
+
+@keyframes hud-leave {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0;
+  }
+}
+
+:root {
+  --shimmer-highlight: rgb(255 255 255 / 0.9);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --shimmer-highlight: rgb(28 30 34 / 0.85);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .hud-pill,
+  .hud-pill *,
+  .hud-content {
+    animation: none !important;
+    transition: none !important;
+  }
+
+  .hud-pill-position[data-entering="true"] .hud-pill {
+    animation: hud-fade-in 120ms var(--ease-standard) both !important;
+  }
+
+  .hud-spinner {
+    display: none;
+  }
+
+  .hud-dots {
+    display: inline;
+  }
+
+  .hud-shimmer {
+    background: none;
+    color: var(--color-text);
+  }
+
+  .hud-pill-position[data-leaving="true"] .hud-pill {
+    animation: hud-leave var(--hud-leave-duration) var(--ease-exit) var(--hud-leave-delay) both !important;
+  }
+}
