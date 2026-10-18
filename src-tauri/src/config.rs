@@ -108,9 +108,8 @@ pub fn set_config(
         .map_err(|_| "Configurações indisponíveis no momento.".to_string())?;
     let previous = shortcut::parse(&current.hotkey).ok();
     let hotkey_changed = previous != Some(shortcut);
-    if hotkey_changed {
-        binding.rebind(&app, shortcut, &label)?;
-    }
+    // Mesmo atalho já registrado não faz nada; um que falhou ao abrir o app é tentado de novo.
+    binding.rebind(&app, shortcut, &label)?;
     if let Err(e) = save_to(&path, &config) {
         if let (true, Some(old)) = (hotkey_changed, previous) {
             let _ = binding.rebind(&app, old, &dictation::hotkey_label(&current.hotkey));
