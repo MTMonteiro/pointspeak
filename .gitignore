@@ -8,3 +8,5 @@ node_modules/
 dist/
 build/
 .code-review-graph/
+target/
+src-tauri/gen/schemas/
