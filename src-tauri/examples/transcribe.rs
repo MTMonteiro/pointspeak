@@ -17,6 +17,7 @@ use std::time::Instant;
 
 use pointspeak_core::audio::{downmix_to_mono, MonoResampler};
 use pointspeak_core::config::{Backend, Language};
+use pointspeak_core::engine::{onnx_devices, runtime_label};
 use pointspeak_core::models::ONNX_CATALOG;
 use pointspeak_core::transcriber::{self, TranscribeOptions, Transcriber};
 use pointspeak_lib::onnx;
@@ -85,7 +86,21 @@ fn load_onnx(dir: &Path, backend: Backend) -> Result<OrtWhisperTranscriber, Stri
             probe.onnx
         )
     })?;
-    OrtWhisperTranscriber::load(environment, dir, info, backend).map_err(|e| format!("{e:?}"))
+    // DirectML: a ordem do app (NPU, depois GPU).
+    let mut last = String::new();
+    for &device in onnx_devices(backend) {
+        match OrtWhisperTranscriber::load(environment, dir, info, backend, device) {
+            Ok(engine) => {
+                eprintln!("engine ONNX em {}", runtime_label(backend, device));
+                return Ok(engine);
+            }
+            Err(e) => {
+                last = format!("{e:?}");
+                eprintln!("{} falhou: {last}", runtime_label(backend, device));
+            }
+        }
+    }
+    Err(last)
 }
 
 fn run(model: &Path, wav: &Path, language: Language, backend: Backend) -> Result<(), String> {

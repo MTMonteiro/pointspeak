@@ -32,6 +32,7 @@ use serde::Serialize;
 
 use crate::config::{Backend, ModelId};
 use crate::dictation::ModelStatus;
+use crate::engine::DmlDevice;
 use crate::hud::HudState;
 use crate::hud_layout::HudAnchor;
 use crate::models::ModelState;
@@ -191,6 +192,13 @@ pub struct EngineStatusPayload {
     /// iniciou: …`, `Modelo base para ONNX não baixado`). Veja `engine::FallbackReason`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub fallback_reason: Option<String>,
+    /// Só com a engine ONNX no DirectML: o dispositivo em uso (`npu` ou `gpu`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub device: Option<DmlDevice>,
+    /// Só quando a NPU falhou e a GPU assumiu (aviso informativo, ex.: `NPU não carregou o modelo
+    /// ONNX: …. Usando a GPU.`). Veja `engine::DeviceFallback`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub device_fallback_reason: Option<String>,
 }
 
 /// Por que o teste de microfone parou sozinho.
@@ -250,6 +258,8 @@ mod tests {
             backend: Backend::Cpu,
             paused: false,
             fallback_reason: None,
+            device: None,
+            device_fallback_reason: None,
         };
         // Sem fallback, `fallbackReason` não aparece.
         assert_eq!(
@@ -258,7 +268,7 @@ mod tests {
         );
         let fallback = EngineStatusPayload {
             fallback_reason: Some("Modelo large-v3-turbo para ONNX não baixado".into()),
-            ..loaded
+            ..loaded.clone()
         };
         assert_eq!(
             serde_json::to_value(fallback).unwrap(),
@@ -270,12 +280,31 @@ mod tests {
                 "fallbackReason": "Modelo large-v3-turbo para ONNX não baixado"
             })
         );
+        let npu_to_gpu = EngineStatusPayload {
+            backend: Backend::Directml,
+            device: Some(DmlDevice::Gpu),
+            device_fallback_reason: Some("NPU não iniciou: erro. Usando a GPU.".into()),
+            ..loaded.clone()
+        };
+        assert_eq!(
+            serde_json::to_value(npu_to_gpu).unwrap(),
+            json!({
+                "model": "large-v3-turbo",
+                "status": "loaded",
+                "backend": "directml",
+                "paused": false,
+                "device": "gpu",
+                "deviceFallbackReason": "NPU não iniciou: erro. Usando a GPU."
+            })
+        );
         let none = EngineStatusPayload {
             model: None,
             status: ModelStatus::NotSelected,
             backend: Backend::Cpu,
             paused: true,
             fallback_reason: None,
+            device: None,
+            device_fallback_reason: None,
         };
         assert_eq!(
             serde_json::to_value(none).unwrap(),

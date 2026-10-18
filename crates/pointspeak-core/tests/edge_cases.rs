@@ -62,6 +62,8 @@ fn clipboard_is_restored_when_paste_fails() {
         [
             "get_text",
             "set_text:texto transcrito",
+            // Leitura de volta que confere o texto antes de colar.
+            "get_text",
             "set_text:clipboard do usuário"
         ]
     );
@@ -190,7 +192,7 @@ fn load_with_fallback_reports_unavailable_missing_provider_and_model_reasons() {
     let loaded = load_with_fallback(
         &unavailable,
         onnx_path,
-        |_| panic!("backend indisponível não abre ONNX"),
+        |_, _| panic!("backend indisponível não abre ONNX"),
         |backend| {
             assert_eq!(backend, Backend::Cpu);
             Ok::<_, TranscribeError>("cpu")
@@ -218,7 +220,7 @@ fn load_with_fallback_reports_unavailable_missing_provider_and_model_reasons() {
     let loaded = load_with_fallback(
         &missing_onnx,
         onnx_path,
-        |_| panic!("ONNX ausente não tenta carregar"),
+        |_, _| panic!("ONNX ausente não tenta carregar"),
         |backend| {
             assert_eq!(backend, Backend::Cpu);
             Ok::<_, TranscribeError>("cpu")
@@ -260,7 +262,7 @@ fn load_with_fallback_reports_unavailable_missing_provider_and_model_reasons() {
         let loaded = load_with_fallback(
             &plan,
             onnx_path,
-            |_| Err(load_error.clone()),
+            |_, _| Err(load_error.clone()),
             |backend| {
                 assert_eq!(backend, Backend::Cpu);
                 Ok::<_, TranscribeError>("cpu")

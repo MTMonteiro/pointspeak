@@ -84,6 +84,7 @@ Abra um editor de texto (Bloco de Notas / gedit / Kate) com o cursor numa linha 
 | 4.4 | Ditar num navegador (campo de busca) | O texto entra no campo | ☐ | ☐ | ☐ |
 | 4.5 | Wayland sem `wtype`/`ydotool` | HUD mostra `Falha ao colar` por ~4 s; o clipboard original é restaurado | — | — | ☐ |
 | 4.6 | Com o histórico do clipboard ligado (Win+V no Windows; Klipper/KDE ou outro gerenciador no Linux), ditar uma frase e abrir o histórico | A frase ditada não aparece no histórico (nem na sincronização na nuvem do Windows); o texto colado entra normalmente no app | ☐ | ☐ | ☐ |
+| 4.7 | **Windows, colagem com clipboard ocupado:** copie um texto qualquer (ex.: "texto antigo"), dite uma frase com o `large-v3-turbo` num navegador e num editor (VS Code/Notepad) | Entra a frase **ditada**, nunca o "texto antigo"; ~400 ms depois o clipboard volta ao "texto antigo" (cole num campo para conferir). Se o clipboard estiver travado por outro app, o HUD mostra `Falha ao colar` (nada é colado) e o clipboard volta ao "texto antigo" | ☐ | — | — |
 
 ## 5. HUD
 
@@ -137,7 +138,7 @@ a CPU).
 | # | Passo | Esperado | Win | X11 | Wayland |
 | --- | --- | --- | --- | --- | --- |
 | 8.1 | Abra a pasta de instalação (`%LOCALAPPDATA%\PointSpeak` ou a escolhida no instalador) | `onnxruntime.dll` e `DirectML.dll` ao lado do `pointspeak.exe`; licenças em `licenses\` | ☐ | — | — |
-| 8.2 | Configurações → Hardware num PC com GPU/NPU DirectX 12 | `NPU (DirectML)` disponível (detalhe com o fabricante, quando o Windows informa); OpenVINO `Nenhum dispositivo Intel compatível`, CUDA `Nenhuma GPU NVIDIA encontrada`, Vulkan `Não incluído nesta versão`, CPU `Sempre disponível` | ☐ | — | — |
+| 8.2 | Configurações → Hardware num PC com GPU/NPU DirectX 12 | `NPU (DirectML)` disponível; o detalhe diz se há NPU: `NPU detectada` (num PC com NPU, ex.: Intel Core Ultra, Snapdragon X, Ryzen AI) ou `Sem NPU · GPU`, com o fabricante quando o Windows informa; OpenVINO `Nenhum dispositivo Intel compatível`, CUDA `Nenhuma GPU NVIDIA encontrada`, Vulkan `Não incluído nesta versão`, CPU `Sempre disponível` | ☐ | — | — |
 | 8.3 | Feche o app, renomeie o `onnxruntime.dll` da pasta de instalação e abra de novo | O app abre normalmente; DirectML, OpenVINO e CUDA com `ONNX Runtime não encontrado`; ditado segue na CPU. Desfaça a troca de nome depois | ☐ | — | — |
 | 8.4 | Selecione `NPU (DirectML)` com o `onnxruntime.dll` renomeado (8.3) e dite algo | Cartão DirectML indisponível; o ditado funciona na CPU (whisper.cpp) | ☐ | — | — |
 | 8.5 | Linux sem ONNX Runtime: abra Configurações → Hardware | DirectML `Disponível só no Windows`; OpenVINO e CUDA `ONNX Runtime não encontrado`; Vulkan `Não incluído nesta versão` | — | ☐ | ☐ |
@@ -154,18 +155,19 @@ a CPU).
 ### 8.A DirectML no Windows (engine Whisper ONNX)
 
 Num PC com GPU ou NPU DirectX 12 (8.2 com `NPU (DirectML)` disponível) e o app aberto com o stderr num arquivo (`Start-Process … -RedirectStandardError`, veja
-**Logs no Windows** no começo). O DirectML usa o dispositivo mais rápido que o Windows indicar (GPU ou NPU).
+**Logs no Windows** no começo). O DirectML tenta a NPU primeiro e, se ela não iniciar ou não abrir o modelo, a GPU; só depois cai para a CPU.
 
 | # | Passo | Esperado | Win | X11 | Wayland |
 | --- | --- | --- | --- | --- | --- |
 | 8.12 | Hardware → `NPU (DirectML)` (ou `Automático`, que escolhe o DirectML primeiro) e abra Modelos | A lista mostra a variante ONNX: modelos com só o `.bin` aparecem como `Baixar`; tamanhos iguais aos do ggml | ☐ | — | — |
 | 8.13 | Baixe o `base` e clique em `Usar este` | Progresso único até `Pronto` (soma dos 4 arquivos); pasta `models\onnx-base\` com `encoder_model_fp16.onnx`, `decoder_model_merged_fp16.onnx`, `vocab.json`, `added_tokens.json` | ☐ | — | — |
-| 8.14 | Dite uma frase em PT e outra em EN | Texto colado; terminal `[pointspeak] transcrição: ONNX Runtime em DirectML`; rodapé `Pronto · base · DirectML`; sem aviso de fallback na seção Hardware | ☐ | — | — |
-| 8.15 | Gerenciador de Tarefas → Desempenho durante um ditado longo (~20 s) | Uso da GPU (ou NPU) sobe na transcrição; anote o tempo entre soltar o atalho e colar, comparado com a CPU (8.18) | ☐ | — | — |
+| 8.14 | Dite uma frase em PT e outra em EN | Texto colado; terminal `[pointspeak] transcrição: ONNX Runtime em DirectML · NPU` (PC com NPU) ou `… em DirectML · GPU` (sem NPU); rodapé `Pronto · base · DirectML · NPU` (ou `· GPU`); Hardware mostra `Em uso agora: DirectML · NPU` e nenhum aviso de fallback para a CPU | ☐ | — | — |
+| 8.15 | Com o `large-v3-turbo` ativo **e a variante ONNX dele baixada** (Modelos com DirectML escolhido mostra `Ativo`, não `Baixar`; pasta `models\onnx-large-v3-turbo\` com os 4 arquivos), Gerenciador de Tarefas → Desempenho durante um ditado longo (~20 s) | Num PC com NPU, o gráfico da **NPU** sobe na transcrição (rodapé `· DirectML · NPU`); sem NPU, o da GPU. Se o gráfico da NPU ficar zerado, confira o rodapé e o terminal: `· CPU` = variante ONNX ausente ou fallback (8.16), `· GPU` = a NPU falhou (8.21). Anote o tempo entre soltar o atalho e colar, comparado com a CPU (8.18) | ☐ | — | — |
 | 8.16 | **Fallback (variante ausente):** em `CPU`, baixe o `tiny` (`.bin`) e clique em `Usar este`; volte ao `NPU (DirectML)` sem baixar a variante ONNX do `tiny` e dite | Ditado funciona na CPU; terminal `… whisper.cpp em CPU (fallback: Modelo tiny para ONNX não baixado)`; Hardware mostra o aviso "A aceleração NPU (DirectML) não iniciou. O PointSpeak está usando a CPU. Motivo: Modelo tiny para ONNX não baixado"; rodapé `· CPU` | ☐ | — | — |
 | 8.17 | **Fallback (modelo ONNX inválido):** feche o app, sobrescreva o começo do `models\onnx-base\encoder_model_fp16.onnx` mantendo o tamanho (PowerShell: `$f=[IO.File]::Open("<caminho>",'Open'); $f.Write((New-Object byte[] 64),0,64); $f.Close()`), com o `ggml-base.bin` também baixado (em `CPU`), abra e dite | Ditado funciona na CPU; com DirectML ainda indicado como disponível, Hardware mostra o detalhe do dispositivo detectado e o aviso com a causa real `DirectML não carregou o modelo ONNX: …`; rodapé mostra `· CPU`. Clique `Tentar de novo`: a lista e o estado atual do motor são recarregados e o aviso permanece enquanto o modelo continuar inválido. Depois ative outro modelo, remova o `base` (variante ONNX) e baixe de novo | ☐ | — | — |
 | 8.18 | Troque o backend para `CPU` | A lista de Modelos volta à variante ggml sozinha; o próximo ditado carrega o whisper.cpp (`transcrição: whisper.cpp em CPU`), sem aviso de fallback | ☐ | — | — |
 | 8.19 | Com a variante ONNX do modelo ativo ausente (8.16), baixe-a com o DirectML escolhido | Ao terminar, a bandeja passa por `Carregando modelo…` e o próximo ditado sai no DirectML (o fallback some) | ☐ | — | — |
+| 8.21 | **NPU → GPU:** num PC com NPU em que a NPU não abre o modelo (ou sem NPU), dite com o `NPU (DirectML)` | Ditado funciona acelerado na GPU; terminal `[pointspeak] engine ONNX (DirectML · NPU): …` e `transcrição: ONNX Runtime em DirectML · GPU (NPU não … Usando a GPU.)`; Hardware mostra o aviso informativo "A transcrição continua acelerada pelo DirectML. NPU …. Usando a GPU." (não o aviso de CPU) e `Em uso agora: DirectML · GPU`; rodapé `· DirectML · GPU`. Sem NPU nenhuma, o motivo é `NPU não iniciou: …` | ☐ | — | — |
 | 8.20 | (Dev, opcional) Linux, engine ONNX na CPU EP: `./scripts/fetch-onnxruntime.sh linux`, baixe a pasta `onnx-tiny` (URLs no `ONNX_CATALOG`) e rode `ORT_DYLIB_PATH=$PWD/target/onnxruntime/linux-x64/libonnxruntime.so cargo run -p pointspeak --release --example transcribe -- --backend cpu <pasta onnx-tiny> jfk.wav en` | Mesmo texto do whisper.cpp (`… ggml-tiny.bin jfk.wav en`); `--backend directml` no Linux sai com `DirectML is not supported in this build of ONNX Runtime` | — | ☐ | — |
 
 ## 9. Riscos aceitos (revisão de segurança, task #807)
@@ -176,7 +178,7 @@ detalhes estão em `docs/tecnologia.md` (**Segurança e privacidade**).
 | # | Risco | O que conferir | Aceito |
 | --- | --- | --- | --- |
 | 9.1 | **Sem assinatura de código:** o .exe, o .deb e o AppImage não são assinados; o SmartScreen avisa (1.1) e a integridade depende do canal por onde o arquivo chega | Compare o SHA-256 do arquivo recebido com o de `docs/tecnologia.md` | ☐ |
-| 9.2 | **Clipboard compartilhado por ~50 ms:** durante a colagem outro app que leia o clipboard vê o texto ditado; gerenciadores de clipboard que ignoram a dica de histórico podem guardá-lo (4.6) | Se usa um gerenciador de clipboard, veja se a frase ditada fica guardada nele | ☐ |
+| 9.2 | **Clipboard compartilhado por ~400 ms (Windows) / ~50 ms (Linux):** durante a colagem outro app que leia o clipboard vê o texto ditado; gerenciadores de clipboard que ignoram a dica de histórico podem guardá-lo (4.6) | Se usa um gerenciador de clipboard, veja se a frase ditada fica guardada nele | ☐ |
 | 9.3 | **`ORT_DYLIB_PATH`:** quem controla as variáveis de ambiente da sua conta pode fazer o app carregar outra biblioteca ONNX Runtime (a variável existe para desenvolvimento; caminho relativo é ignorado) | Nada a testar; risco pressupõe acesso à sua conta | ☐ |
 | 9.4 | **Instalação por usuário (Windows):** a pasta `%LOCALAPPDATA%\PointSpeak` é gravável pelo próprio usuário, como em todo app instalado por usuário; as DLLs do ONNX Runtime são carregadas dela | Confira em 8.1 que as DLLs estão nessa pasta | ☐ |
 | 9.5 | **CPU com AVX2 obrigatória:** em CPU sem AVX2/FMA o app fecha ao transcrever (o .exe e os pacotes Linux são compilados para AVX2) | Se tiver um PC antigo, anote o comportamento | ☐ |

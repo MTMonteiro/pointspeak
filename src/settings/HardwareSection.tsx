@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { useCallback, useEffect, useState } from "react";
+import { DML_DEVICE_LABELS } from "../lib/contract";
 import type { AppConfig, Backend, BackendOption, EngineStatus } from "../lib/contract";
 import { Button, Callout, RadioCard, Skeleton } from "./components";
 
@@ -71,6 +72,9 @@ export function HardwareSection({
   const fallback = chosenFallback || autoFallback;
   const fallbackLabel = config.backend === "auto" ? undefined : BACKEND_LABELS[config.backend];
   const fallbackReason = engineStatus?.fallbackReason ?? "O motor não informou a causa.";
+  // DirectML on the GPU because the NPU failed: still accelerated, so only informative.
+  const deviceFallbackReason = fallback ? undefined : engineStatus?.deviceFallbackReason;
+  const device = engineStatus?.backend === "directml" ? engineStatus.device : undefined;
 
   return (
     <div className="settings-hardware">
@@ -127,6 +131,13 @@ export function HardwareSection({
             </Callout>
           )}
 
+          {deviceFallbackReason && (
+            <Callout tone="info">
+              <p>A transcrição continua acelerada pelo DirectML. {deviceFallbackReason}</p>
+            </Callout>
+          )}
+
+          {device && <p className="settings-hint">Em uso agora: DirectML · {DML_DEVICE_LABELS[device]}</p>}
           <p className="settings-hint">Os backends indisponíveis mostram o motivo e não podem ser selecionados.</p>
         </>
       )}

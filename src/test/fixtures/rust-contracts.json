@@ -54,6 +54,14 @@
     "paused": false,
     "status": "loaded"
   },
+  "engineStatusNpuToGpu": {
+    "backend": "directml",
+    "device": "gpu",
+    "deviceFallbackReason": "NPU não carregou o modelo ONNX: op sem suporte. Usando a GPU.",
+    "model": "tiny",
+    "paused": false,
+    "status": "loaded"
+  },
   "modelFailedProgress": {
     "done": 0,
     "id": "large-v3-turbo",

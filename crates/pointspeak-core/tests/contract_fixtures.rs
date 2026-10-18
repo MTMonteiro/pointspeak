@@ -4,6 +4,7 @@ use std::path::PathBuf;
 
 use pointspeak_core::config::{AppConfig, Backend, Language, ModelId, OutputMode};
 use pointspeak_core::dictation::ModelStatus;
+use pointspeak_core::engine::{DeviceFallback, DmlDevice, OnnxLoadError};
 use pointspeak_core::events::{
     AudioLevelPayload, EngineStatusPayload, ErrorKind, ModelProgressPayload, StateChangedPayload,
 };
@@ -65,9 +66,24 @@ fn current_contracts() -> Value {
         backend: Backend::Cpu,
         paused: false,
         fallback_reason: None,
+        device: None,
+        device_fallback_reason: None,
     };
     let engine_fallback = EngineStatusPayload {
         fallback_reason: Some("DirectML não iniciou: provider indisponível".into()),
+        ..engine.clone()
+    };
+    let engine_npu_to_gpu = EngineStatusPayload {
+        backend: Backend::Directml,
+        device: Some(DmlDevice::Gpu),
+        device_fallback_reason: Some(
+            DeviceFallback {
+                failed: DmlDevice::Npu,
+                used: DmlDevice::Gpu,
+                error: OnnxLoadError::Model("op sem suporte".into()),
+            }
+            .message(),
+        ),
         ..engine.clone()
     };
     let backend_options = [
@@ -118,6 +134,7 @@ fn current_contracts() -> Value {
         "audioLevel": serde_json::to_value(AudioLevelPayload::new(0.625)).unwrap(),
         "engineStatus": serde_json::to_value(&engine).unwrap(),
         "engineStatusFallback": serde_json::to_value(&engine_fallback).unwrap(),
+        "engineStatusNpuToGpu": serde_json::to_value(&engine_npu_to_gpu).unwrap(),
         "appConfig": serde_json::to_value(&config).unwrap(),
         "modelsGgml": serde_json::to_value(ggml.overview(Some(ModelId::Tiny), "/models/ggml".into())).unwrap(),
         "modelsOnnx": serde_json::to_value(onnx.overview(Some(ModelId::Tiny), "/models/onnx".into())).unwrap(),

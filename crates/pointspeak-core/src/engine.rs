@@ -7,10 +7,16 @@
 //! ou o ONNX Runtime não abre o modelo, cai para o whisper.cpp na CPU (se o ggml existe), guardando
 //! o motivo ([`FallbackReason`]) que o `engine://status` mostra em `fallbackReason`.
 //!
+//! No DirectML a engine tenta os dispositivos na ordem de [`DmlDevice::ORDER`]: NPU primeiro, depois
+//! a GPU (encoder e decoder sempre no mesmo dispositivo); só se os dois falham entra o fallback para
+//! a CPU. A NPU que falha com a GPU assumindo fica em [`DeviceFallback`] (aviso informativo).
+//!
 //! O `src-tauri` só entrega o que o disco e a detecção informam ([`EnginePlan`]) e os dois
 //! carregadores; a decisão e os textos ficam aqui.
 
 use std::path::Path;
+
+use serde::Serialize;
 
 use crate::config::{Backend, ModelId};
 use crate::models::ModelVariant;
@@ -89,6 +95,73 @@ pub fn summarize_error(error: &str) -> String {
     }
     let cut: String = line.chars().take(MAX_ERROR_CHARS - 1).collect();
     format!("{}…", cut.trim_end())
+}
+
+/// Dispositivo do DirectML (`DeviceFilter` do `ort`) em que a engine ONNX abriu as sessões.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum DmlDevice {
+    /// `DeviceFilter::Npu`.
+    Npu,
+    /// `DeviceFilter::Gpu` com `PerformancePreference::HighPerformance` (dedicada antes da
+    /// integrada).
+    Gpu,
+}
+
+impl DmlDevice {
+    /// Ordem de tentativa no DirectML: a NPU primeiro (com `DeviceFilter::Any` o Windows escolhe a
+    /// GPU e a NPU nunca é usada), depois a GPU.
+    pub const ORDER: [DmlDevice; 2] = [DmlDevice::Npu, DmlDevice::Gpu];
+
+    /// Nome nos textos e no log.
+    pub fn label(self) -> &'static str {
+        match self {
+            DmlDevice::Npu => "NPU",
+            DmlDevice::Gpu => "GPU",
+        }
+    }
+}
+
+/// Dispositivos que a engine ONNX tenta para `backend`, na ordem. Só o DirectML escolhe dispositivo;
+/// as outras EPs abrem uma vez (`None`).
+pub fn onnx_devices(backend: Backend) -> &'static [Option<DmlDevice>] {
+    const DIRECTML: [Option<DmlDevice>; 2] = [Some(DmlDevice::Npu), Some(DmlDevice::Gpu)];
+    match backend {
+        Backend::Directml => &DIRECTML,
+        _ => &[None],
+    }
+}
+
+/// Backend e dispositivo nos textos: `DirectML · NPU`, `DirectML · GPU` ou só o backend.
+pub fn runtime_label(backend: Backend, device: Option<DmlDevice>) -> String {
+    match device {
+        Some(device) => format!("{} · {}", backend_label(backend), device.label()),
+        None => backend_label(backend).to_string(),
+    }
+}
+
+/// Um dispositivo do DirectML falhou e o seguinte da ordem assumiu (aviso informativo, a engine
+/// continua acelerada).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeviceFallback {
+    /// O que falhou (a NPU).
+    pub failed: DmlDevice,
+    /// O que roda (a GPU).
+    pub used: DmlDevice,
+    /// O erro, já resumido ([`summarize_error`]).
+    pub error: OnnxLoadError,
+}
+
+impl DeviceFallback {
+    /// Texto curto em PT-BR para `deviceFallbackReason` e o log.
+    pub fn message(&self) -> String {
+        let failed = self.failed.label();
+        let what = match &self.error {
+            OnnxLoadError::Provider(e) => format!("{failed} não iniciou: {e}"),
+            OnnxLoadError::Model(e) => format!("{failed} não carregou o modelo ONNX: {e}"),
+        };
+        format!("{what}. Usando a {}.", self.used.label())
+    }
 }
 
 /// Por que a engine roda num backend diferente do escolhido.
@@ -222,6 +295,27 @@ pub struct EngineRuntime {
     pub backend: Backend,
     pub kind: EngineKind,
     pub fallback: Option<FallbackReason>,
+    /// Dispositivo do DirectML em uso (só com a engine ONNX no DirectML).
+    pub device: Option<DmlDevice>,
+    /// A NPU falhou e a GPU assumiu.
+    pub device_fallback: Option<DeviceFallback>,
+}
+
+impl EngineRuntime {
+    /// Linha do log de carga (depois de `transcrição: `): engine, backend e dispositivo, com o
+    /// fallback de dispositivo ou o de CPU entre parênteses.
+    pub fn summary(&self) -> String {
+        let base = format!(
+            "{} em {}",
+            self.kind.name(),
+            runtime_label(self.backend, self.device)
+        );
+        match (&self.fallback, &self.device_fallback) {
+            (Some(reason), _) => format!("{base} (fallback: {})", reason.message()),
+            (None, Some(device)) => format!("{base} ({})", device.message()),
+            (None, None) => base,
+        }
+    }
 }
 
 /// Engine carregada e o que roda.
@@ -234,14 +328,16 @@ pub struct Loaded<E> {
 ///
 /// - Engine whisper.cpp: `load_ggml(backend)` (o arquivo ausente vira `ModelNotFound` lá dentro).
 /// - Engine ONNX: variante ausente → [`FallbackReason::OnnxNotDownloaded`] sem chamar
-///   `load_onnx`; EP ou modelo que falham → [`FallbackReason::ProviderFailed`] /
-///   [`FallbackReason::ModelLoadFailed`]. Com o motivo, `load_ggml(Cpu)` se o ggml está no disco;
-///   sem ele, o erro é o de modelo ausente (`ModelNotFound` da pasta ONNX, via `onnx_path`) ou o da
-///   carga ONNX (`Load`).
+///   `load_onnx`; senão `load_onnx(backend, device)` para cada dispositivo de [`onnx_devices`]
+///   (DirectML: NPU e depois GPU; o primeiro que abre fica, com a falha anterior em
+///   [`DeviceFallback`]). Se todos falham, o erro do último vira [`FallbackReason::ProviderFailed`]
+///   / [`FallbackReason::ModelLoadFailed`]. Com o motivo, `load_ggml(Cpu)` se o ggml está no
+///   disco; sem ele, o erro é o de modelo ausente (`ModelNotFound` da pasta ONNX, via `onnx_path`)
+///   ou o da carga ONNX (`Load`).
 pub fn load_with_fallback<E>(
     plan: &EnginePlan,
     onnx_path: &Path,
-    load_onnx: impl FnOnce(Backend) -> Result<E, OnnxLoadError>,
+    mut load_onnx: impl FnMut(Backend, Option<DmlDevice>) -> Result<E, OnnxLoadError>,
     load_ggml: impl FnOnce(Backend) -> Result<E, TranscribeError>,
 ) -> Result<Loaded<E>, TranscribeError> {
     let kind = plan.kind();
@@ -253,30 +349,34 @@ pub fn load_with_fallback<E>(
                 backend: plan.backend,
                 kind,
                 fallback: plan.unavailable.clone(),
+                device: None,
+                device_fallback: None,
             },
         });
     }
     let reason = if !plan.onnx_ready {
         FallbackReason::OnnxNotDownloaded { model: plan.model }
     } else {
-        match load_onnx(plan.backend) {
-            Ok(engine) => {
+        match load_on_devices(plan.backend, &mut load_onnx) {
+            Ok((engine, device, device_fallback)) => {
                 return Ok(Loaded {
                     engine,
                     runtime: EngineRuntime {
                         backend: plan.backend,
                         kind,
                         fallback: None,
+                        device,
+                        device_fallback,
                     },
                 })
             }
-            Err(OnnxLoadError::Provider(e)) => FallbackReason::ProviderFailed {
+            Err(OnnxLoadError::Provider(error)) => FallbackReason::ProviderFailed {
                 backend: plan.backend,
-                error: summarize_error(&e),
+                error,
             },
-            Err(OnnxLoadError::Model(e)) => FallbackReason::ModelLoadFailed {
+            Err(OnnxLoadError::Model(error)) => FallbackReason::ModelLoadFailed {
                 backend: plan.backend,
-                error: summarize_error(&e),
+                error,
             },
         }
     };
@@ -295,8 +395,49 @@ pub fn load_with_fallback<E>(
             backend: Backend::Cpu,
             kind: EngineKind::WhisperCpp,
             fallback: Some(reason),
+            device: None,
+            device_fallback: None,
         },
     })
+}
+
+/// Engine ONNX aberta, o dispositivo e a falha do dispositivo anterior.
+type OnDevice<E> = (E, Option<DmlDevice>, Option<DeviceFallback>);
+
+/// Tenta os dispositivos de `backend` na ordem; o erro (resumido) é o do último.
+fn load_on_devices<E>(
+    backend: Backend,
+    load_onnx: &mut impl FnMut(Backend, Option<DmlDevice>) -> Result<E, OnnxLoadError>,
+) -> Result<OnDevice<E>, OnnxLoadError> {
+    let summarize = |e: OnnxLoadError| match e {
+        OnnxLoadError::Provider(e) => OnnxLoadError::Provider(summarize_error(&e)),
+        OnnxLoadError::Model(e) => OnnxLoadError::Model(summarize_error(&e)),
+    };
+    let mut first_failure: Option<(DmlDevice, OnnxLoadError)> = None;
+    let mut last_error = None;
+    for &device in onnx_devices(backend) {
+        match load_onnx(backend, device) {
+            Ok(engine) => {
+                let device_fallback = match (first_failure, device) {
+                    (Some((failed, error)), Some(used)) => Some(DeviceFallback {
+                        failed,
+                        used,
+                        error,
+                    }),
+                    _ => None,
+                };
+                return Ok((engine, device, device_fallback));
+            }
+            Err(e) => {
+                let e = summarize(e);
+                if let (None, Some(device)) = (&first_failure, device) {
+                    first_failure = Some((device, e.clone()));
+                }
+                last_error = Some(e);
+            }
+        }
+    }
+    Err(last_error.unwrap_or_else(|| OnnxLoadError::Provider(summarize_error(""))))
 }
 
 #[cfg(test)]
@@ -413,6 +554,7 @@ mod tests {
                     providers: vec![ProviderProbe {
                         backend: Backend::Directml,
                         device: None,
+                        npu: false,
                     }],
                 },
                 vulkan: VulkanStatus::NotIncluded,
@@ -475,14 +617,32 @@ mod tests {
     #[derive(Default)]
     struct Calls(RefCell<Vec<(&'static str, Backend)>>);
 
+    type OnnxResult = Result<&'static str, OnnxLoadError>;
+
     impl Calls {
+        /// Carregador ONNX que devolve `result` em toda tentativa.
         fn onnx(
             &self,
-            result: Result<&'static str, OnnxLoadError>,
-        ) -> impl FnOnce(Backend) -> Result<&'static str, OnnxLoadError> + '_ {
-            move |b| {
-                self.0.borrow_mut().push(("onnx", b));
-                result
+            result: OnnxResult,
+        ) -> impl FnMut(Backend, Option<DmlDevice>) -> OnnxResult + '_ {
+            self.onnx_seq(vec![result; 2])
+        }
+
+        /// Carregador ONNX que devolve os resultados na ordem das tentativas. Registra `npu`/`gpu`
+        /// no DirectML e `onnx` nas outras EPs.
+        fn onnx_seq(
+            &self,
+            results: Vec<OnnxResult>,
+        ) -> impl FnMut(Backend, Option<DmlDevice>) -> OnnxResult + '_ {
+            let mut results = results.into_iter();
+            move |b, device| {
+                let name = match device {
+                    Some(DmlDevice::Npu) => "npu",
+                    Some(DmlDevice::Gpu) => "gpu",
+                    None => "onnx",
+                };
+                self.0.borrow_mut().push((name, b));
+                results.next().expect("tentativa a mais")
             }
         }
 
@@ -522,7 +682,9 @@ mod tests {
                 EngineRuntime {
                     backend,
                     kind: EngineKind::WhisperCpp,
-                    fallback: None
+                    fallback: None,
+                    device: None,
+                    device_fallback: None,
                 }
             );
             assert_eq!(calls.take(), [("ggml", backend)]);
@@ -561,7 +723,7 @@ mod tests {
 
     #[test]
     fn onnx_backends_load_onnx_with_their_provider() {
-        for backend in [Backend::Directml, Backend::Openvino, Backend::Cuda] {
+        for backend in [Backend::Openvino, Backend::Cuda] {
             let calls = Calls::default();
             let loaded = load_with_fallback(
                 &plan(backend, true, true),
@@ -576,11 +738,142 @@ mod tests {
                 EngineRuntime {
                     backend,
                     kind: EngineKind::Onnx,
-                    fallback: None
+                    fallback: None,
+                    device: None,
+                    device_fallback: None,
                 }
             );
             assert_eq!(calls.take(), [("onnx", backend)]);
         }
+    }
+
+    #[test]
+    fn directml_tries_the_npu_first() {
+        assert_eq!(DmlDevice::ORDER, [DmlDevice::Npu, DmlDevice::Gpu]);
+        assert_eq!(
+            onnx_devices(Backend::Directml),
+            [Some(DmlDevice::Npu), Some(DmlDevice::Gpu)]
+        );
+        for backend in [Backend::Openvino, Backend::Cuda, Backend::Cpu] {
+            assert_eq!(onnx_devices(backend), [None], "{backend:?}");
+        }
+        let calls = Calls::default();
+        let loaded = load_with_fallback(
+            &plan(Backend::Directml, true, true),
+            &onnx_dir(),
+            calls.onnx(Ok("onnx")),
+            calls.ggml(Ok("ggml")),
+        )
+        .unwrap();
+        assert_eq!(
+            loaded.runtime,
+            EngineRuntime {
+                backend: Backend::Directml,
+                kind: EngineKind::Onnx,
+                fallback: None,
+                device: Some(DmlDevice::Npu),
+                device_fallback: None,
+            }
+        );
+        assert_eq!(calls.take(), [("npu", Backend::Directml)]);
+        assert_eq!(loaded.runtime.summary(), "ONNX Runtime em DirectML · NPU");
+    }
+
+    #[test]
+    fn npu_failure_moves_both_sessions_to_the_gpu() {
+        for (error, message) in [
+            (
+                OnnxLoadError::Provider("No NPU adapter found\nstack".into()),
+                "NPU não iniciou: No NPU adapter found. Usando a GPU.",
+            ),
+            (
+                OnnxLoadError::Model("decoder_model_merged_fp16.onnx: op sem suporte".into()),
+                "NPU não carregou o modelo ONNX: decoder_model_merged_fp16.onnx: op sem suporte. Usando a GPU.",
+            ),
+        ] {
+            let calls = Calls::default();
+            let loaded = load_with_fallback(
+                &plan(Backend::Directml, true, true),
+                &onnx_dir(),
+                calls.onnx_seq(vec![Err(error), Ok("gpu")]),
+                calls.ggml(Ok("ggml")),
+            )
+            .unwrap();
+            assert_eq!(loaded.engine, "gpu");
+            assert_eq!(loaded.runtime.backend, Backend::Directml);
+            assert_eq!(loaded.runtime.device, Some(DmlDevice::Gpu));
+            assert_eq!(loaded.runtime.fallback, None);
+            let device = loaded.runtime.device_fallback.clone().unwrap();
+            assert_eq!((device.failed, device.used), (DmlDevice::Npu, DmlDevice::Gpu));
+            assert_eq!(device.message(), message);
+            assert_eq!(
+                loaded.runtime.summary(),
+                format!("ONNX Runtime em DirectML · GPU ({message})")
+            );
+            // Sem CPU: a GPU assumiu.
+            assert_eq!(
+                calls.take(),
+                [("npu", Backend::Directml), ("gpu", Backend::Directml)]
+            );
+        }
+    }
+
+    #[test]
+    fn npu_and_gpu_failing_fall_back_to_cpu_with_the_gpu_error() {
+        let calls = Calls::default();
+        let loaded = load_with_fallback(
+            &plan(Backend::Directml, true, true),
+            &onnx_dir(),
+            calls.onnx_seq(vec![
+                Err(OnnxLoadError::Model("npu: op sem suporte".into())),
+                Err(OnnxLoadError::Provider("0x887A0004".into())),
+            ]),
+            calls.ggml(Ok("ggml")),
+        )
+        .unwrap();
+        assert_eq!(loaded.engine, "ggml");
+        assert_eq!(
+            loaded.runtime,
+            EngineRuntime {
+                backend: Backend::Cpu,
+                kind: EngineKind::WhisperCpp,
+                fallback: Some(FallbackReason::ProviderFailed {
+                    backend: Backend::Directml,
+                    error: "0x887A0004".into()
+                }),
+                device: None,
+                device_fallback: None,
+            }
+        );
+        assert_eq!(
+            loaded.runtime.summary(),
+            "whisper.cpp em CPU (fallback: DirectML não iniciou: 0x887A0004)"
+        );
+        assert_eq!(
+            calls.take(),
+            [
+                ("npu", Backend::Directml),
+                ("gpu", Backend::Directml),
+                ("ggml", Backend::Cpu)
+            ]
+        );
+    }
+
+    #[test]
+    fn runtime_labels() {
+        assert_eq!(
+            runtime_label(Backend::Directml, Some(DmlDevice::Npu)),
+            "DirectML · NPU"
+        );
+        assert_eq!(
+            runtime_label(Backend::Directml, Some(DmlDevice::Gpu)),
+            "DirectML · GPU"
+        );
+        assert_eq!(runtime_label(Backend::Openvino, None), "OpenVINO");
+        assert_eq!(
+            serde_json::to_value([DmlDevice::Npu, DmlDevice::Gpu]).unwrap(),
+            serde_json::json!(["npu", "gpu"])
+        );
     }
 
     #[test]
@@ -601,7 +894,9 @@ mod tests {
                 kind: EngineKind::WhisperCpp,
                 fallback: Some(FallbackReason::OnnxNotDownloaded {
                     model: ModelId::Base
-                })
+                }),
+                device: None,
+                device_fallback: None,
             }
         );
         assert_eq!(calls.take(), [("ggml", Backend::Cpu)]);
@@ -626,7 +921,11 @@ mod tests {
         );
         assert_eq!(
             calls.take(),
-            [("onnx", Backend::Directml), ("ggml", Backend::Cpu)]
+            [
+                ("npu", Backend::Directml),
+                ("gpu", Backend::Directml),
+                ("ggml", Backend::Cpu)
+            ]
         );
     }
 

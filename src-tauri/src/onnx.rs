@@ -8,7 +8,9 @@
 //! A detecção ([`hardware`]) roda uma vez e fica em cache: o `setup` a dispara numa thread
 //! ([`detect_in_background`]); quem pede antes de ela terminar espera o mesmo resultado. Para cada
 //! EP (DirectML, OpenVINO, CUDA) ela confere se o runtime a traz (`is_available`) e se registra
-//! numa sessão de teste (sem modelo: o DirectML cria o dispositivo DirectX 12 aqui). O `Environment`
+//! numa sessão de teste (sem modelo: o DirectML cria o dispositivo DirectX 12 aqui). O DirectML é
+//! testado com os dois filtros (NPU e GPU): disponível se um deles registra, e o cartão diz se há
+//! NPU. O `Environment`
 //! criado fica guardado ([`environment`]): o `ort` só aceita um por processo, e o Silero VAD
 //! (`vad.rs`) e a engine Whisper ONNX (`onnx_whisper.rs`) criam as sessões nesse mesmo.
 
@@ -20,6 +22,7 @@ use std::thread;
 use ort::ep::{self, ExecutionProvider};
 use ort::session::Session;
 use pointspeak_core::config::Backend;
+use pointspeak_core::engine::DmlDevice;
 use pointspeak_core::onnx_runtime::{find_library, library_candidates, ORT_DYLIB_ENV};
 use pointspeak_core::settings::{
     HardwareProbe, OnnxRuntimeStatus, ProviderProbe, TargetOs, VulkanStatus,
@@ -90,11 +93,7 @@ fn detect_onnx(resource_dir: Option<&Path>) -> OnnxRuntimeStatus {
     log::info!("ONNX Runtime carregado de {}", library.display());
     let environment = ENVIRONMENT.get_or_init(|| environment);
     let providers = [
-        probe_provider(
-            environment,
-            Backend::Directml,
-            crate::onnx_whisper::directml(),
-        ),
+        probe_directml(environment),
         probe_provider(environment, Backend::Openvino, ep::OpenVINO::default()),
         probe_provider(environment, Backend::Cuda, ep::CUDA::default()),
     ];
@@ -137,26 +136,78 @@ fn probe_provider<E: ExecutionProvider>(
     backend: Backend,
     provider: E,
 ) -> Option<ProviderProbe> {
-    match E::is_available() {
-        Ok(true) => {}
-        Ok(false) => return None,
-        Err(e) => {
-            log::warn!("{}: {e}", E::NAME);
-            return None;
-        }
+    if !provider_available::<E>() {
+        return None;
     }
-    let registered =
-        Session::builder(environment).and_then(|mut builder| provider.register(&mut builder));
-    if let Err(e) = registered {
+    if let Err(e) = register_test(environment, &provider) {
         eprintln!("[pointspeak] {} não iniciou: {e}", E::NAME);
         return None;
     }
-    let device = environment
+    Some(ProviderProbe {
+        backend,
+        device: vendor::<E>(environment),
+        npu: false,
+    })
+}
+
+/// DirectML com os dois filtros do app (`onnx_whisper::directml`): disponível se a NPU ou a GPU
+/// registra; `npu` diz se a NPU registrou.
+fn probe_directml(environment: &ort::environment::Environment) -> Option<ProviderProbe> {
+    type Dml = ep::DirectML;
+    if !provider_available::<Dml>() {
+        return None;
+    }
+    let mut npu = false;
+    let mut any = false;
+    for device in DmlDevice::ORDER {
+        match register_test(environment, &crate::onnx_whisper::directml(device)) {
+            Ok(()) => {
+                npu |= device == DmlDevice::Npu;
+                any = true;
+            }
+            Err(e) => eprintln!(
+                "[pointspeak] {} ({}) não iniciou: {e}",
+                Dml::NAME,
+                device.label()
+            ),
+        }
+    }
+    log::info!(
+        "DirectML: NPU {}",
+        if npu { "detectada" } else { "ausente" }
+    );
+    any.then(|| ProviderProbe {
+        backend: Backend::Directml,
+        device: vendor::<Dml>(environment),
+        npu,
+    })
+}
+
+fn provider_available<E: ExecutionProvider>() -> bool {
+    match E::is_available() {
+        Ok(available) => available,
+        Err(e) => {
+            log::warn!("{}: {e}", E::NAME);
+            false
+        }
+    }
+}
+
+/// Registra `provider` numa sessão de teste, sem modelo.
+fn register_test<E: ExecutionProvider>(
+    environment: &ort::environment::Environment,
+    provider: &E,
+) -> ort::Result<()> {
+    Session::builder(environment).and_then(|mut builder| provider.register(&mut builder))
+}
+
+/// Fabricante do primeiro dispositivo que o ONNX Runtime lista para a EP `E`.
+fn vendor<E: ExecutionProvider>(environment: &ort::environment::Environment) -> Option<String> {
+    environment
         .devices()
         .find(|d| d.ep().is_ok_and(|name| name == E::NAME))
         .and_then(|d| d.hardware_device().vendor().ok().map(str::to_string))
-        .filter(|vendor| !vendor.is_empty());
-    Some(ProviderProbe { backend, device })
+        .filter(|vendor| !vendor.is_empty())
 }
 
 /// Loader do Vulkan (só com a feature `vulkan` do whisper.cpp).
