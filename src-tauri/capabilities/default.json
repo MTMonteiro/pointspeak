@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Permissões das janelas de configurações e do HUD.",
+  "windows": ["settings", "hud"],
+  "permissions": ["core:default"]
+}

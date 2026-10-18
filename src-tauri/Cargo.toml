@@ -1,0 +1,19 @@
+[package]
+name = "pointspeak"
+description = "PointSpeak: ditado por voz local com HUD no cursor."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+# O sufixo `_lib` evita conflito de nome com o binário no Windows.
+name = "pointspeak_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+pointspeak-core = { path = "../crates/pointspeak-core" }
+tauri = { version = "2", features = ["tray-icon"] }
+tauri-plugin-global-shortcut = "2"

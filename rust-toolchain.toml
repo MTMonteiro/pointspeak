@@ -1,0 +1,5 @@
+# Garante rustfmt e clippy (usados nos checks) em qualquer máquina com rustup.
+[toolchain]
+channel = "stable"
+components = ["rustfmt", "clippy"]
+profile = "minimal"
