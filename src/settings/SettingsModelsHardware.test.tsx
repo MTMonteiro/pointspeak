@@ -13,6 +13,7 @@ type TestConfig = {
   silenceTimeoutMs: number;
   backend: string;
   maxRecordingSecs: number;
+  outputMode: string;
 };
 
 const CONFIG: TestConfig = {
@@ -25,6 +26,7 @@ const CONFIG: TestConfig = {
   silenceTimeoutMs: 2500,
   backend: "auto",
   maxRecordingSecs: 300,
+  outputMode: "paste",
 };
 
 const MICROPHONES = [{ name: "Microfone padrão", isDefault: true }];

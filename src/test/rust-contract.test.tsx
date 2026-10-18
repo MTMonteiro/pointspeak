@@ -58,7 +58,8 @@ function isAppConfig(value: unknown): value is AppConfig {
     && typeof value.autoStopOnSilence === "boolean"
     && typeof value.silenceTimeoutMs === "number"
     && isOneOf(value.backend, BACKENDS)
-    && typeof value.maxRecordingSecs === "number";
+    && typeof value.maxRecordingSecs === "number"
+    && isOneOf(value.outputMode, ["paste", "clipboard"]);
 }
 
 function isEngineStatus(value: unknown): value is EngineStatus {

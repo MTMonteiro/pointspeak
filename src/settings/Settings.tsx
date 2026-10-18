@@ -52,6 +52,7 @@ const DEFAULT_CONFIG: AppConfig = {
   silenceTimeoutMs: 2500,
   backend: "auto",
   maxRecordingSecs: 300,
+  outputMode: "paste",
 };
 
 const INVALID_HOTKEY = "Use ao menos um modificador (Ctrl, Alt, Shift ou Super) com uma tecla.";
