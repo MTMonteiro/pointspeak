@@ -1,1 +1,103 @@
 @import "tailwindcss";
+
+/* Tokens compartilhados pelas janelas, conforme docs/design/DESIGN.md §2. */
+@theme {
+  --color-bg: #F6F7F9;
+  --color-surface: #FFFFFF;
+  --color-surface-2: #EEF0F3;
+  --color-divider: #D0D7DE;
+  --color-border-control: #7D8590;
+  --color-text: #1F2328;
+  --color-text-muted: #59636E;
+  --color-text-disabled: #6E7781;
+  --color-accent: #4F46E5;
+  --color-on-accent: #FFFFFF;
+  --color-accent-soft: #EEF0FF;
+  --color-record: #D92D20;
+  --color-success: #1A7F37;
+  --color-success-soft: #EDFAF1;
+  --color-danger: #B42318;
+  --color-danger-soft: #FEF3F2;
+  --color-warning: #9A6700;
+  --color-warning-soft: #FFF8C5;
+  --color-hud-bg: rgb(255 255 255 / 0.96);
+  --color-hud-border: rgb(31 35 40 / 0.12);
+  --color-focus: var(--color-accent);
+
+  --font-sans: system-ui, -apple-system, "Segoe UI", Roboto, Ubuntu, Cantarell, "Noto Sans", sans-serif;
+  --font-mono: ui-monospace, "Cascadia Mono", "DejaVu Sans Mono", monospace;
+  --text-hud: 13px;
+  --text-hud--line-height: 16px;
+  --text-hud--font-weight: 500;
+  --text-caption: 12px;
+  --text-caption--line-height: 16px;
+  --text-body: 14px;
+  --text-body--line-height: 20px;
+  --text-label: 14px;
+  --text-label--line-height: 20px;
+  --text-label--font-weight: 600;
+  --text-title: 18px;
+  --text-title--line-height: 24px;
+  --text-title--font-weight: 600;
+  --text-kbd: 12px;
+  --text-kbd--line-height: 16px;
+  --text-kbd--font-weight: 600;
+  --text-kbd--font-family: var(--font-mono);
+
+  --spacing: 0.25rem;
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 14px;
+  --radius-pill: 999px;
+  --shadow-hud: 0 1px 2px rgb(0 0 0 / 0.18), 0 4px 10px rgb(0 0 0 / 0.16);
+  --shadow-card: 0 1px 2px rgb(16 24 40 / 0.06);
+  --size-hud-window-width: 220px;
+  --size-hud-window-height: 56px;
+  --size-hud-pill-height: 40px;
+  --size-hud-inset: 8px;
+  --size-hud-pill-max-width: 204px;
+  --size-settings-window-width: 720px;
+  --size-settings-window-height: 560px;
+  --size-settings-window-min-width: 360px;
+  --size-settings-window-min-height: 480px;
+  --size-target: 32px;
+  --size-target-min: 24px;
+
+  --ease-standard: cubic-bezier(0.2, 0, 0, 1);
+  --ease-exit: cubic-bezier(0.3, 0, 1, 1);
+  --ease-inout: cubic-bezier(0.4, 0, 0.2, 1);
+  --dur-fast: 120ms;
+  --dur-bar: 90ms;
+  --dur-enter: 160ms;
+  --dur-morph: 240ms;
+  --dur-success-fade: 400ms;
+  --dur-pulse: 1200ms;
+  --dur-spin: 800ms;
+  --dur-shimmer: 1400ms;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --color-bg: #141518;
+    --color-surface: #1C1E22;
+    --color-surface-2: #25282D;
+    --color-divider: #33373D;
+    --color-border-control: #737B85;
+    --color-text: #F2F3F5;
+    --color-text-muted: #A1A7B0;
+    --color-text-disabled: #868E96;
+    --color-accent: #A5B4FC;
+    --color-on-accent: #1C1E22;
+    --color-accent-soft: #262A45;
+    --color-record: #FF6B5E;
+    --color-success: #3FB950;
+    --color-success-soft: #1B2B20;
+    --color-danger: #F97066;
+    --color-danger-soft: #2A1C1C;
+    --color-warning: #E3B341;
+    --color-warning-soft: #2B2410;
+    --color-hud-bg: rgb(28 30 34 / 0.94);
+    --color-hud-border: rgb(255 255 255 / 0.10);
+    --shadow-card: none;
+  }
+}
