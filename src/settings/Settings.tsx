@@ -11,6 +11,7 @@ import type {
   SettingsMicLevelPayload,
 } from "../lib/contract";
 import {
+  DML_DEVICE_LABELS,
   ENGINE_STATUS,
   SETTINGS_MIC_LEVEL,
   SETTINGS_MIC_TEST_ENDED,
@@ -63,6 +64,12 @@ const BACKEND_LABELS: Record<EngineStatus["backend"], string> = {
   cuda: "CUDA",
   vulkan: "Vulkan",
 };
+
+/** Backend that runs, with the DirectML device: `DirectML · NPU`. */
+function engineBackendLabel(status: EngineStatus) {
+  const backend = BACKEND_LABELS[status.backend];
+  return status.device ? `${backend} · ${DML_DEVICE_LABELS[status.device]}` : backend;
+}
 
 function sectionFromHash(): SectionId {
   if (typeof window === "undefined") return "microfone";
@@ -147,7 +154,7 @@ function EngineStatusView({ status }: { status: EngineStatus | null }) {
   } else if (status?.status === "loaded") {
     text = status.paused
       ? "Pausado"
-      : `Pronto · ${status.model ?? "modelo"} · ${BACKEND_LABELS[status.backend]}`;
+      : `Pronto · ${status.model ?? "modelo"} · ${engineBackendLabel(status)}`;
     tone = status.paused ? "warning" : "ready";
   }
   return (
@@ -814,7 +821,7 @@ function AboutSection({
       </Callout>
       <dl className="settings-facts">
         <dt>Modelo</dt><dd>{engineName}</dd>
-        <dt>Hardware</dt><dd>{engine ? BACKEND_LABELS[engine.backend] : "Carregando…"}</dd>
+        <dt>Hardware</dt><dd>{engine ? engineBackendLabel(engine) : "Carregando…"}</dd>
         <dt>Idioma</dt><dd>{languageName}</dd>
       </dl>
       <div className="settings-about-actions">

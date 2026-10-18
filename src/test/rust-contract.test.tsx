@@ -67,7 +67,9 @@ function isEngineStatus(value: unknown): value is EngineStatus {
     && isOneOf(value.status, ["notSelected", "loading", "loaded", "failed"])
     && isOneOf(value.backend, BACKENDS)
     && typeof value.paused === "boolean"
-    && (value.fallbackReason === undefined || typeof value.fallbackReason === "string");
+    && (value.fallbackReason === undefined || typeof value.fallbackReason === "string")
+    && (value.device === undefined || isOneOf(value.device, ["npu", "gpu"]))
+    && (value.deviceFallbackReason === undefined || typeof value.deviceFallbackReason === "string");
 }
 
 function isModelState(value: unknown): boolean {
@@ -134,6 +136,7 @@ function readContracts() {
     appConfig: checked(rawFixtures.appConfig, isAppConfig, "appConfig"),
     engineStatus: checked(rawFixtures.engineStatus, isEngineStatus, "engineStatus"),
     engineStatusFallback: checked(rawFixtures.engineStatusFallback, isEngineStatus, "engineStatusFallback"),
+    engineStatusNpuToGpu: checked(rawFixtures.engineStatusNpuToGpu, isEngineStatus, "engineStatusNpuToGpu"),
     modelsGgml: checked(rawFixtures.modelsGgml, isModelsOverview, "modelsGgml"),
     modelsOnnx: checked(rawFixtures.modelsOnnx, isModelsOverview, "modelsOnnx"),
     modelProgress: checked(rawFixtures.modelProgress, isModelProgress, "modelProgress"),
@@ -208,6 +211,9 @@ describe("fixtures do contrato Rust ↔ TypeScript", () => {
       expect(screen.getByText(/Intel Core Ultra com NPU/)).toBeInTheDocument();
       await act(async () => emitTauriEvent(ENGINE_STATUS, fixtures.engineStatusFallback));
       expect(screen.getByText(/DirectML não iniciou: provider indisponível/)).toBeInTheDocument();
+      await act(async () => emitTauriEvent(ENGINE_STATUS, fixtures.engineStatusNpuToGpu));
+      expect(screen.getByText(/NPU não carregou o modelo ONNX: op sem suporte\. Usando a GPU\./)).toBeInTheDocument();
+      expect(screen.getByText("Pronto · tiny · DirectML · GPU")).toBeInTheDocument();
 
       view.unmount();
     },

@@ -43,6 +43,11 @@ export const ENGINE_STATUS = "engine://status";
 export const SETTINGS_MIC_LEVEL = "settings://mic-level";
 export const SETTINGS_MIC_TEST_ENDED = "settings://mic-test-ended";
 
+/** DirectML device the ONNX engine runs on (`engine::DmlDevice`). */
+export type DmlDevice = "npu" | "gpu";
+
+export const DML_DEVICE_LABELS: Record<DmlDevice, string> = { npu: "NPU", gpu: "GPU" };
+
 /** Mirrors `EngineStatusPayload`, shared by `get_engine_status` and `engine://status`. */
 export type EngineStatus = {
   model: ModelId | null;
@@ -52,6 +57,10 @@ export type EngineStatus = {
   paused: boolean;
   /** Only when the engine fell back: why the chosen backend is not running (PT-BR). */
   fallbackReason?: string;
+  /** Only with the ONNX engine on DirectML: the device in use. */
+  device?: DmlDevice;
+  /** Only when the NPU failed and the GPU took over (informative, PT-BR). */
+  deviceFallbackReason?: string;
 };
 
 export type ModelState =
