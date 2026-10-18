@@ -6,4 +6,5 @@ import { resetTauriMock } from "./tauri-mock";
 afterEach(() => {
   cleanup();
   resetTauriMock();
+  window.history.replaceState(null, "", "/");
 });
