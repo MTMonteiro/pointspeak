@@ -98,7 +98,7 @@ Abra um editor de texto (Bloco de Notas / gedit / Kate) com o cursor numa linha 
 
 ## 8. Aceleração: ONNX Runtime e hardware
 
-O ONNX Runtime é carregado e roda o Silero VAD da parada por silêncio (ainda não transcreve: a engine ONNX chega na próxima etapa). Os avisos saem no
+O ONNX Runtime é carregado e roda o Silero VAD da parada por silêncio (ainda não transcreve: o núcleo puro da engine Whisper ONNX já existe, mas a engine no app chega na próxima etapa; a lista de modelos continua só com os `.bin` ggml). Os avisos saem no
 terminal como `[pointspeak] ONNX Runtime …`.
 
 | # | Passo | Esperado | Win | X11 | Wayland |
@@ -113,3 +113,4 @@ terminal como `[pointspeak] ONNX Runtime …`.
 | 8.8 | Com o VAD ativo: Toggle, fale uma frase com pausas curtas entre as palavras e fique calado | Não para nas pausas curtas; para ~2,5 s (`silenceTimeoutMs`) depois da última palavra e cola | ☐ | ☐ | ☐ |
 | 8.9 | Com o VAD ativo: Toggle num ambiente com ruído contínuo (ventilador, música baixa sem voz) e não fale; pare com o atalho | HUD mostra `Nada foi ouvido` (o ruído não conta como fala); as barras do HUD continuam reagindo ao ruído | ☐ | ☐ | ☐ |
 | 8.10 | Sem ONNX Runtime (passo 8.3 no Windows; Linux sem `ORT_DYLIB_PATH`): repita o 3.6 | Para sozinho pelo RMS como antes, sem erro no HUD; no terminal `[pointspeak] VAD: ONNX Runtime indisponível; parada por silêncio pelo RMS` | ☐ | ☐ | ☐ |
+| 8.11 | (Dev, opcional) Vocabulário real do Whisper ONNX: baixe `vocab.json` e `added_tokens.json` de `onnx-community/whisper-tiny` e de `onnx-community/whisper-large-v3-turbo` (URLs no `ONNX_CATALOG`) e rode `WHISPER_VOCAB_DIR=<pasta> cargo test -p pointspeak-core real_vocab -- --ignored --nocapture` para cada um | Passa nos dois; imprime `pt=50267` com 99 idiomas (tiny) e 100 (large-v3-turbo) | — | ☐ | — |

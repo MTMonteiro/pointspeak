@@ -1,4 +1,5 @@
-//! Model Manager: catálogo dos modelos Whisper (ggml), estado de cada um e download verificado.
+//! Model Manager: catálogos dos modelos Whisper (ggml e ONNX), estado de cada um e download
+//! verificado (um arquivo ou a pasta inteira de um modelo ONNX).
 //!
 //! Tudo aqui é testável sem rede: o download consome qualquer [`Read`] (o transporte HTTP fica no
 //! `src-tauri`), grava em `<arquivo>.part`, calcula o SHA-256 enquanto grava e só renomeia para o
@@ -102,6 +103,228 @@ impl ModelId {
             .iter()
             .find(|m| m.id == self)
             .expect("todo ModelId está no catálogo")
+    }
+}
+
+/// Variante de um modelo: o mesmo [`ModelId`] existe em ggml (whisper-rs, um arquivo `.bin`) e
+/// em ONNX (ort, uma pasta com encoder, decoder e vocabulário).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ModelVariant {
+    #[default]
+    Ggml,
+    Onnx,
+}
+
+impl ModelVariant {
+    /// Onde o modelo fica dentro da pasta dos modelos: o arquivo (ggml) ou a pasta (ONNX).
+    pub fn local_path(self, id: ModelId, models_dir: &Path) -> PathBuf {
+        match self {
+            ModelVariant::Ggml => models_dir.join(id.info().file_name),
+            ModelVariant::Onnx => models_dir.join(id.onnx_info().dir_name),
+        }
+    }
+
+    /// Bytes no disco depois do download.
+    pub fn size_bytes(self, id: ModelId) -> u64 {
+        match self {
+            ModelVariant::Ggml => id.info().size_bytes,
+            ModelVariant::Onnx => id.onnx_info().size_bytes(),
+        }
+    }
+}
+
+/// Servidor dos exports ONNX (Hugging Face).
+pub const ONNX_MODELS_HOST: &str = "https://huggingface.co";
+
+/// Um arquivo de um modelo ONNX.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelFile {
+    /// Caminho no repositório (ex.: `onnx/encoder_model_fp16.onnx`).
+    pub path: &'static str,
+    pub size_bytes: u64,
+    /// SHA-256 em hexadecimal minúsculo.
+    pub sha256: &'static str,
+}
+
+impl ModelFile {
+    /// Nome do arquivo dentro da pasta local do modelo (o fim de [`ModelFile::path`]).
+    pub fn file_name(&self) -> &'static str {
+        self.path.rsplit('/').next().unwrap_or(self.path)
+    }
+
+    pub fn expected(&self) -> Expected<'static> {
+        Expected {
+            size: self.size_bytes,
+            sha256: self.sha256,
+        }
+    }
+
+    /// Item de [`download_verified_files`].
+    pub fn item(&self) -> DownloadItem<'static> {
+        DownloadItem {
+            file_name: self.file_name(),
+            expected: self.expected(),
+        }
+    }
+}
+
+/// Um modelo do catálogo ONNX: export do `onnx-community` no Hugging Face (encoder + decoder
+/// "merged", que tem o KV cache, em fp16) e o vocabulário.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OnnxModelInfo {
+    pub id: ModelId,
+    /// Repositório no Hugging Face (ex.: `onnx-community/whisper-tiny`).
+    pub repo: &'static str,
+    /// Commit fixado: os hashes valem para ele, mesmo que o `main` mude.
+    pub revision: &'static str,
+    /// Pasta do modelo dentro da pasta dos modelos.
+    pub dir_name: &'static str,
+    /// Bandas do log-mel que o encoder espera.
+    pub n_mels: usize,
+    pub encoder: ModelFile,
+    pub decoder: ModelFile,
+    pub vocab: ModelFile,
+    pub added_tokens: ModelFile,
+}
+
+impl OnnxModelInfo {
+    /// Arquivos na ordem do download (o vocabulário primeiro, por ser pequeno).
+    pub fn files(&self) -> [ModelFile; 4] {
+        [self.vocab, self.added_tokens, self.encoder, self.decoder]
+    }
+
+    /// URL de download de um arquivo, no commit fixado.
+    pub fn url(&self, file: &ModelFile) -> String {
+        format!(
+            "{ONNX_MODELS_HOST}/{}/resolve/{}/{}",
+            self.repo, self.revision, file.path
+        )
+    }
+
+    /// Soma dos arquivos, em bytes.
+    pub fn size_bytes(&self) -> u64 {
+        self.files().iter().map(|f| f.size_bytes).sum()
+    }
+}
+
+/// Vocabulário do multilíngue clássico (tiny, base e small têm os mesmos arquivos).
+const MULTILINGUAL_VOCAB: ModelFile = ModelFile {
+    path: "vocab.json",
+    size_bytes: 1_036_584,
+    sha256: "50d6a919f0a0601d56a04eb583c780d18553aa388254ba3158eb6a00f13e2c1a",
+};
+const MULTILINGUAL_ADDED_TOKENS: ModelFile = ModelFile {
+    path: "added_tokens.json",
+    size_bytes: 34_604,
+    sha256: "9715fd2243b6f06a5858b5e32950d2853f73dd5bc201aafcf76f5082a2d8acd1",
+};
+
+/// Catálogo ONNX, na ordem da interface.
+///
+/// Encoder e decoder: tamanho e SHA-256 do campo `lfs` (`oid sha256`) de
+/// `https://huggingface.co/api/models/<repo>/tree/<revision>?recursive=true`, conferido em
+/// 2026-10-18. `vocab.json` e `added_tokens.json` não estão no LFS: o hash foi calculado
+/// baixando cada um (`sha256sum`). Os dois `.onnx` do tiny também foram baixados e conferidos.
+/// Variante fp16 (`encoder_model_fp16.onnx` + `decoder_model_merged_fp16.onnx`): metade do
+/// fp32, roda nativa no DirectML/GPU/NPU e na CPU (o ONNX Runtime insere os casts), e as
+/// entradas e saídas continuam f32. Motivo completo em `docs/tecnologia.md`.
+pub const ONNX_CATALOG: [OnnxModelInfo; 4] = [
+    OnnxModelInfo {
+        id: ModelId::Tiny,
+        repo: "onnx-community/whisper-tiny",
+        revision: "ff4177021cc41f7db950912b73ea4fdf7d01d8e7",
+        dir_name: "onnx-tiny",
+        n_mels: 80,
+        encoder: ModelFile {
+            path: "onnx/encoder_model_fp16.onnx",
+            size_bytes: 16_519_192,
+            sha256: "fc4bf9f3fadc450b128c3ef0711a4e61a55797447b6a700abe7fb97d9f549518",
+        },
+        decoder: ModelFile {
+            path: "onnx/decoder_model_merged_fp16.onnx",
+            size_bytes: 59_593_896,
+            sha256: "a1aac8aa5f4e9e835e343025edf5e4d1644ab6f629c0f8c21e121868e60b3f6c",
+        },
+        vocab: MULTILINGUAL_VOCAB,
+        added_tokens: MULTILINGUAL_ADDED_TOKENS,
+    },
+    OnnxModelInfo {
+        id: ModelId::Base,
+        repo: "onnx-community/whisper-base",
+        revision: "1846881b6b3a3024392c1eea3ad983695bc23925",
+        dir_name: "onnx-base",
+        n_mels: 80,
+        encoder: ModelFile {
+            path: "onnx/encoder_model_fp16.onnx",
+            size_bytes: 41_332_612,
+            sha256: "ffba51b20185377c1b89362b1128148d0132de936a32b200af973da2a11a5369",
+        },
+        decoder: ModelFile {
+            path: "onnx/decoder_model_merged_fp16.onnx",
+            size_bytes: 104_727_818,
+            sha256: "2078fb08b753e3a74120e6a52446eef1b98f6152d1da43658731367a93fd71a4",
+        },
+        vocab: MULTILINGUAL_VOCAB,
+        added_tokens: MULTILINGUAL_ADDED_TOKENS,
+    },
+    OnnxModelInfo {
+        id: ModelId::Small,
+        repo: "onnx-community/whisper-small",
+        revision: "36050c46d777d46dc4b5f43f6d90574fc38f8732",
+        dir_name: "onnx-small",
+        n_mels: 80,
+        encoder: ModelFile {
+            path: "onnx/encoder_model_fp16.onnx",
+            size_bytes: 176_607_756,
+            sha256: "5549cd8666ff4b694ceb128bfa48b95bdcceec29075cf2c2212f90002cc058de",
+        },
+        decoder: ModelFile {
+            path: "onnx/decoder_model_merged_fp16.onnx",
+            size_bytes: 308_583_076,
+            sha256: "22aba6c7f5193701cbe1519051b6ef097eb530ad6887b7093065ec59b830f61d",
+        },
+        vocab: MULTILINGUAL_VOCAB,
+        added_tokens: MULTILINGUAL_ADDED_TOKENS,
+    },
+    OnnxModelInfo {
+        id: ModelId::LargeV3Turbo,
+        repo: "onnx-community/whisper-large-v3-turbo",
+        revision: "360ebcde2559d60bb474678be3c1de9ef347d01a",
+        dir_name: "onnx-large-v3-turbo",
+        n_mels: 128,
+        encoder: ModelFile {
+            path: "onnx/encoder_model_fp16.onnx",
+            size_bytes: 1_274_342_603,
+            sha256: "fdadc70836e6b028fd5e580417c312208dad073d2d01e509e2d127c1373399d8",
+        },
+        decoder: ModelFile {
+            path: "onnx/decoder_model_merged_fp16.onnx",
+            size_bytes: 344_227_339,
+            sha256: "fdf10afca73a0c7bf87286cfb96cf7028a9edbc9bb02512509a526f95b126c9d",
+        },
+        vocab: ModelFile {
+            path: "vocab.json",
+            size_bytes: 1_036_558,
+            sha256: "e2aa043ef015641d363d8288e7c241c85e36a5c761fb303598e0710233344387",
+        },
+        added_tokens: ModelFile {
+            path: "added_tokens.json",
+            size_bytes: 34_648,
+            sha256: "3c51f66c4c21f9e126970078f11ae77a78c74aee8df606ee9daba86e467108e0",
+        },
+    },
+];
+
+impl ModelId {
+    /// Entrada do catálogo ONNX deste modelo.
+    pub fn onnx_info(self) -> &'static OnnxModelInfo {
+        ONNX_CATALOG
+            .iter()
+            .find(|m| m.id == self)
+            .expect("todo ModelId está no catálogo ONNX")
     }
 }
 
@@ -305,6 +528,86 @@ pub fn download_verified<R: Read>(
     result
 }
 
+/// Um arquivo de [`download_verified_files`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DownloadItem<'a> {
+    /// Nome dentro da pasta de destino.
+    pub file_name: &'a str,
+    pub expected: Expected<'a>,
+}
+
+/// Baixa vários arquivos para a pasta `dest_dir` (um modelo ONNX), cada um conferido como no
+/// [`download_verified`].
+///
+/// Os arquivos vão para `<dest_dir>.part/` e a pasta só é renomeada para `dest_dir` quando
+/// todos conferem, então um modelo pela metade nunca parece pronto. `open(i)` abre o stream do
+/// item `i` (o transporte HTTP fica no `src-tauri`). O progresso é da soma dos arquivos e o
+/// `Verifying` sai uma vez, no último. Arquivo que já está completo na pasta `.part` (de uma
+/// tentativa que caiu) não é baixado de novo: ele só ganhou o nome final depois de conferido.
+/// Cancelamento apaga a pasta `.part`; outro erro mantém os arquivos já conferidos para a
+/// próxima tentativa.
+pub fn download_verified_files<R: Read>(
+    items: &[DownloadItem<'_>],
+    dest_dir: &Path,
+    cancel: &AtomicBool,
+    mut clock: impl FnMut() -> Instant,
+    mut open: impl FnMut(usize) -> Result<R, DownloadError>,
+    mut on_event: impl FnMut(DownloadEvent),
+) -> Result<(), DownloadError> {
+    let staging = part_path(dest_dir);
+    let total: u64 = items.iter().map(|i| i.expected.size).sum();
+    let mut last_done = None;
+    let mut progress = |done: u64, on_event: &mut dyn FnMut(DownloadEvent)| {
+        if last_done != Some(done) {
+            last_done = Some(done);
+            on_event(DownloadEvent::Progress { done, total });
+        }
+    };
+    let result = (|| {
+        fs::create_dir_all(&staging)?;
+        let mut offset = 0;
+        for (i, item) in items.iter().enumerate() {
+            if cancel.load(Ordering::Relaxed) {
+                return Err(DownloadError::Cancelled);
+            }
+            let target = staging.join(item.file_name);
+            let complete = fs::metadata(&target)
+                .map(|m| m.is_file() && m.len() == item.expected.size)
+                .unwrap_or(false);
+            if !complete {
+                let last = i + 1 == items.len();
+                download_verified(
+                    open(i)?,
+                    &target,
+                    item.expected,
+                    cancel,
+                    &mut clock,
+                    |event| match event {
+                        DownloadEvent::Progress { done, .. } => {
+                            progress(offset + done, &mut on_event)
+                        }
+                        DownloadEvent::Verifying if last => on_event(DownloadEvent::Verifying),
+                        DownloadEvent::Verifying => {}
+                    },
+                )?;
+            }
+            offset += item.expected.size;
+            progress(offset, &mut on_event);
+        }
+        if dest_dir.is_dir() {
+            fs::remove_dir_all(dest_dir)?;
+        } else if dest_dir.exists() {
+            fs::remove_file(dest_dir)?;
+        }
+        fs::rename(&staging, dest_dir)?;
+        Ok(())
+    })();
+    if result == Err(DownloadError::Cancelled) {
+        let _ = fs::remove_dir_all(&staging);
+    }
+    result
+}
+
 /// Modelos cujo arquivo final existe em `dir` com o tamanho do catálogo. Não recalcula o hash
 /// (o download já conferiu); arquivo de tamanho errado não conta.
 pub fn scan_dir(dir: &Path) -> HashSet<ModelId> {
@@ -314,6 +617,23 @@ pub fn scan_dir(dir: &Path) -> HashSet<ModelId> {
             fs::metadata(dir.join(m.file_name))
                 .map(|meta| meta.is_file() && meta.len() == m.size_bytes)
                 .unwrap_or(false)
+        })
+        .map(|m| m.id)
+        .collect()
+}
+
+/// Modelos ONNX cuja pasta existe em `dir` com todos os arquivos no tamanho do catálogo (a pasta
+/// `.part` de um download incompleto não conta).
+pub fn scan_onnx_dir(dir: &Path) -> HashSet<ModelId> {
+    ONNX_CATALOG
+        .iter()
+        .filter(|m| {
+            let model_dir = dir.join(m.dir_name);
+            m.files().iter().all(|f| {
+                fs::metadata(model_dir.join(f.file_name()))
+                    .map(|meta| meta.is_file() && meta.len() == f.size_bytes)
+                    .unwrap_or(false)
+            })
         })
         .map(|m| m.id)
         .collect()
@@ -858,6 +1178,322 @@ mod tests {
         fs::write(dir.path().join("ggml-base.bin"), b"incompleto").unwrap();
         fs::create_dir(dir.path().join("ggml-small.bin")).unwrap();
         assert_eq!(scan_dir(dir.path()), HashSet::from([ModelId::Tiny]));
+    }
+
+    #[test]
+    fn onnx_catalog_files() {
+        let rows: Vec<_> = ONNX_CATALOG
+            .iter()
+            .map(|m| (m.id.as_str(), m.repo, m.dir_name, m.n_mels))
+            .collect();
+        assert_eq!(
+            rows,
+            [
+                ("tiny", "onnx-community/whisper-tiny", "onnx-tiny", 80),
+                ("base", "onnx-community/whisper-base", "onnx-base", 80),
+                ("small", "onnx-community/whisper-small", "onnx-small", 80),
+                (
+                    "large-v3-turbo",
+                    "onnx-community/whisper-large-v3-turbo",
+                    "onnx-large-v3-turbo",
+                    128
+                ),
+            ]
+        );
+        for id in ModelId::ALL {
+            let info = id.onnx_info();
+            assert_eq!(info.id, id);
+            assert_eq!(info.revision.len(), 40, "{id:?}");
+            let names: Vec<_> = info.files().iter().map(ModelFile::file_name).collect();
+            assert_eq!(
+                names,
+                [
+                    "vocab.json",
+                    "added_tokens.json",
+                    "encoder_model_fp16.onnx",
+                    "decoder_model_merged_fp16.onnx"
+                ]
+            );
+            for f in info.files() {
+                assert_eq!(f.sha256.len(), 64, "{id:?} {}", f.path);
+                assert!(f
+                    .sha256
+                    .bytes()
+                    .all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')));
+                assert!(f.size_bytes > 0);
+            }
+        }
+        // Valores do LFS do Hugging Face (fonte em docs/tecnologia.md); o tiny foi baixado e
+        // conferido com sha256sum.
+        let tiny = ModelId::Tiny.onnx_info();
+        assert_eq!(
+            (tiny.encoder.size_bytes, tiny.encoder.sha256),
+            (
+                16_519_192,
+                "fc4bf9f3fadc450b128c3ef0711a4e61a55797447b6a700abe7fb97d9f549518"
+            )
+        );
+        assert_eq!(
+            (tiny.decoder.size_bytes, tiny.decoder.sha256),
+            (
+                59_593_896,
+                "a1aac8aa5f4e9e835e343025edf5e4d1644ab6f629c0f8c21e121868e60b3f6c"
+            )
+        );
+        assert_eq!(tiny.size_bytes(), 77_184_276);
+        assert_eq!(
+            tiny.url(&tiny.encoder),
+            "https://huggingface.co/onnx-community/whisper-tiny/resolve/\
+             ff4177021cc41f7db950912b73ea4fdf7d01d8e7/onnx/encoder_model_fp16.onnx"
+        );
+        // tiny/base/small dividem o vocabulário; o large-v3 tem o seu (um idioma a mais).
+        let large = ModelId::LargeV3Turbo.onnx_info();
+        assert_eq!(ModelId::Small.onnx_info().vocab, tiny.vocab);
+        assert_ne!(large.added_tokens.sha256, tiny.added_tokens.sha256);
+        assert_eq!(large.size_bytes(), 1_619_641_148);
+    }
+
+    #[test]
+    fn variants_paths_and_sizes() {
+        let dir = Path::new("/m");
+        assert_eq!(ModelVariant::default(), ModelVariant::Ggml);
+        assert_eq!(
+            ModelVariant::Ggml.local_path(ModelId::Base, dir),
+            Path::new("/m/ggml-base.bin")
+        );
+        assert_eq!(
+            ModelVariant::Onnx.local_path(ModelId::Base, dir),
+            Path::new("/m/onnx-base")
+        );
+        assert_eq!(ModelVariant::Ggml.size_bytes(ModelId::Tiny), 77_691_713);
+        assert_eq!(ModelVariant::Onnx.size_bytes(ModelId::Tiny), 77_184_276);
+        assert_eq!(serde_json::to_value(ModelVariant::Onnx).unwrap(), "onnx");
+    }
+
+    /// Três arquivos de teste com o hash certo.
+    fn items_data() -> Vec<(String, Vec<u8>, String)> {
+        [
+            ("vocab.json", 3_000),
+            ("enc.onnx", 50_000),
+            ("dec.onnx", 20_000),
+        ]
+        .iter()
+        .map(|&(name, len)| {
+            let data: Vec<u8> = sample(len).iter().map(|b| b ^ name.len() as u8).collect();
+            let sha = sha_hex(&data);
+            (name.to_string(), data, sha)
+        })
+        .collect()
+    }
+
+    fn items(data: &[(String, Vec<u8>, String)]) -> Vec<DownloadItem<'_>> {
+        data.iter()
+            .map(|(name, bytes, sha)| DownloadItem {
+                file_name: name,
+                expected: Expected {
+                    size: bytes.len() as u64,
+                    sha256: sha,
+                },
+            })
+            .collect()
+    }
+
+    #[test]
+    fn multi_file_download_renames_folder_at_the_end() {
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("onnx-test");
+        let data = items_data();
+        let mut events = Vec::new();
+        let result = download_verified_files(
+            &items(&data),
+            &dest,
+            &AtomicBool::new(false),
+            fake_clock(),
+            |i| {
+                assert!(!dest.exists(), "pasta final antes do fim");
+                Ok(ChunkReader::new(data[i].1.clone(), 1_000))
+            },
+            |e| events.push(e),
+        );
+        assert_eq!(result, Ok(()));
+        for (name, bytes, _) in &data {
+            assert_eq!(&fs::read(dest.join(name)).unwrap(), bytes);
+        }
+        assert!(!part_path(&dest).exists());
+        let total = 73_000;
+        let dones: Vec<u64> = events
+            .iter()
+            .filter_map(|e| match e {
+                DownloadEvent::Progress { done, total: t } => {
+                    assert_eq!(*t, total);
+                    Some(*done)
+                }
+                DownloadEvent::Verifying => None,
+            })
+            .collect();
+        assert_eq!(dones.first(), Some(&0));
+        assert_eq!(dones.last(), Some(&total));
+        assert!(dones.windows(2).all(|w| w[0] < w[1]), "{dones:?}");
+        assert_eq!(
+            events
+                .iter()
+                .filter(|e| **e == DownloadEvent::Verifying)
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn multi_file_retry_reuses_verified_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("onnx-test");
+        let data = items_data();
+        // 1ª tentativa: o segundo arquivo cai no meio.
+        let result = download_verified_files(
+            &items(&data),
+            &dest,
+            &AtomicBool::new(false),
+            fake_clock(),
+            |i| {
+                let mut reader = ChunkReader::new(data[i].1.clone(), 1_000);
+                if i == 1 {
+                    reader.fail_after = Some(10_000);
+                }
+                Ok(reader)
+            },
+            |_| {},
+        );
+        assert_eq!(result, Err(DownloadError::Connection));
+        assert!(!dest.exists());
+        let staging = part_path(&dest);
+        assert!(staging.join("vocab.json").exists());
+        assert!(!part_path(&staging.join("enc.onnx")).exists());
+        // 2ª tentativa: só abre o que falta.
+        let mut opened = Vec::new();
+        let result = download_verified_files(
+            &items(&data),
+            &dest,
+            &AtomicBool::new(false),
+            fake_clock(),
+            |i| {
+                opened.push(i);
+                Ok(ChunkReader::new(data[i].1.clone(), 1_000))
+            },
+            |_| {},
+        );
+        assert_eq!(result, Ok(()));
+        assert_eq!(opened, [1, 2]);
+        assert!(!staging.exists());
+    }
+
+    #[test]
+    fn multi_file_corrupted_and_open_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("onnx-test");
+        let mut data = items_data();
+        data[2].2 = sha_hex(b"outro");
+        let result = download_verified_files(
+            &items(&data),
+            &dest,
+            &AtomicBool::new(false),
+            fake_clock(),
+            |i| Ok(Cursor::new(data[i].1.clone())),
+            |_| {},
+        );
+        assert_eq!(result, Err(DownloadError::Corrupted));
+        assert!(!dest.exists());
+        assert!(!part_path(&dest).join("dec.onnx").exists());
+        let result = download_verified_files(
+            &items(&data),
+            &dest,
+            &AtomicBool::new(false),
+            fake_clock(),
+            |_| Err::<Cursor<Vec<u8>>, _>(DownloadError::Connection),
+            |_| {},
+        );
+        assert_eq!(result, Err(DownloadError::Connection));
+    }
+
+    #[test]
+    fn multi_file_cancel_removes_staging() {
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("onnx-test");
+        let data = items_data();
+        let cancel = AtomicBool::new(false);
+        let result = download_verified_files(
+            &items(&data),
+            &dest,
+            &cancel,
+            fake_clock(),
+            |i| {
+                Ok(CancellingReader {
+                    inner: ChunkReader::new(data[i].1.clone(), 1_000),
+                    cancel: &cancel,
+                    after: if i == 1 { 5_000 } else { usize::MAX },
+                })
+            },
+            |_| {},
+        );
+        assert_eq!(result, Err(DownloadError::Cancelled));
+        assert!(!dest.exists());
+        assert!(!part_path(&dest).exists());
+    }
+
+    #[test]
+    fn multi_file_replaces_stale_folder() {
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("onnx-test");
+        fs::create_dir_all(&dest).unwrap();
+        fs::write(dest.join("velho.onnx"), b"x").unwrap();
+        let data = items_data();
+        let result = download_verified_files(
+            &items(&data),
+            &dest,
+            &AtomicBool::new(false),
+            fake_clock(),
+            |i| Ok(Cursor::new(data[i].1.clone())),
+            |_| {},
+        );
+        assert_eq!(result, Ok(()));
+        assert!(!dest.join("velho.onnx").exists());
+        assert!(dest.join("dec.onnx").exists());
+    }
+
+    #[test]
+    fn model_file_item_uses_catalog_values() {
+        let item = ModelId::Tiny.onnx_info().encoder.item();
+        assert_eq!(item.file_name, "encoder_model_fp16.onnx");
+        assert_eq!(item.expected.size, 16_519_192);
+    }
+
+    #[test]
+    fn scan_onnx_checks_every_file() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(scan_onnx_dir(dir.path()).is_empty());
+        for id in [ModelId::Tiny, ModelId::Base] {
+            let info = id.onnx_info();
+            let model_dir = dir.path().join(info.dir_name);
+            fs::create_dir_all(&model_dir).unwrap();
+            for f in info.files() {
+                let file = File::create(model_dir.join(f.file_name())).unwrap();
+                file.set_len(f.size_bytes).unwrap();
+            }
+        }
+        // Base com o decoder truncado e Small só na pasta .part: não contam.
+        let base = ModelId::Base.onnx_info();
+        File::create(
+            dir.path()
+                .join(base.dir_name)
+                .join(base.decoder.file_name()),
+        )
+        .unwrap()
+        .set_len(10)
+        .unwrap();
+        let small = ModelId::Small.onnx_info();
+        fs::create_dir_all(part_path(&dir.path().join(small.dir_name))).unwrap();
+        assert_eq!(scan_onnx_dir(dir.path()), HashSet::from([ModelId::Tiny]));
+        // A variante ggml não enxerga a pasta ONNX.
+        assert!(scan_dir(dir.path()).is_empty());
     }
 
     #[test]
