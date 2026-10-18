@@ -64,6 +64,7 @@
 
   /* Grade: tema × fundo × estado */
   .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(236px, 1fr)); gap: 12px; }
+  @media (min-width: 760px) { [data-gallery] { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
   .cell { border: 1px solid var(--color-divider); border-radius: var(--radius-md); overflow: hidden; background: var(--color-surface); }
   .cell figcaption { padding: 6px 10px; font-size: 12px; line-height: 16px; color: var(--color-text-muted); border-top: 1px solid var(--color-divider); }
   .stage { display: flex; align-items: center; justify-content: center; padding: 16px 8px; min-height: 88px; }
@@ -242,7 +243,7 @@
     pill.appendChild(content);
     if (state === "error") content.querySelector(".txt").textContent = opts.message || "Microfone indisponível";
     if (state === "recording") setLevel(pill, opts.level || 0);
-    pill.setAttribute("aria-label", { recording: "Gravando", transcribing: "Transcrevendo", success: "Texto colado", error: opts.message || "Microfone indisponível" }[state]);
+    pill.setAttribute("aria-label", { recording: "Gravando", transcribing: "Transcrevendo", success: "Texto colado", error: opts.label || opts.message || "Microfone indisponível" }[state]);
     return pill;
   }
 
@@ -255,7 +256,7 @@
     ["success", {}, "success · check, some em 400 ms"],
     ["error", { message: "Microfone indisponível" }, "error · 3000 ms + fade 400 ms"],
     ["error", { message: "Modelo não encontrado" }, "error · 3000 ms + fade 400 ms"],
-    ["error", { message: "Texto copiado; cole com Ctrl+V" }, "error · colagem falhou, 4000 ms"]
+    ["error", { message: "Cole com Ctrl+V", label: "Não deu para colar; o texto está copiado, cole com Ctrl+V" }, "error · colagem falhou, 4000 ms"]
   ];
   var BGS = [["bg-claro", "fundo claro"], ["bg-escuro", "fundo escuro"], ["bg-ocupado", "fundo ocupado"]];
 

@@ -140,8 +140,8 @@ reticências e o texto inteiro vai no `aria-label`). O nó raiz tem `role="statu
 | --- | --- | --- | --- |
 | `idle` | **Oculto.** A janela fica escondida (`window.hide()`); o React renderiza `null`. Nada é desenhado. | — | — |
 | `recording` | Ponto 8 px `color.record` pulsando · "Gravando" · 5 barras · tempo `0:04` (`text-muted`, tabular) | ~180 px | "Gravando" |
-| `transcribing` | Spinner 14 px (traço 2 px `color.accent`) · "Transcrevendo..." com shimmer | ~150 px | "Transcrevendo" |
-| `success` | Círculo 18 px `color.success` com check branco · "Texto colado" | ~132 px | "Texto colado" |
+| `transcribing` | Spinner 14 px (traço 2 px `color.accent`) · "Transcrevendo..." com shimmer | ~160 px | "Transcrevendo" |
+| `success` | Círculo 18 px `color.success` com check branco · "Texto colado" | ~137 px | "Texto colado" |
 | `error` | Ícone de alerta 16 px `color.danger` · mensagem em `color.danger` | até 204 px | a mensagem |
 
 **Barras do áudio** (`recording`): 5 barras de 3 × 20 px, gap 3 px, `radius.pill`, cor `color.record`, desenhadas
@@ -155,14 +155,14 @@ em altura máxima e escaladas com `transform: scaleY(s)` a partir do centro (`tr
   (`s = s_novo > s_atual ? s_novo : s_atual × 0.85 + s_novo × 0.15`).
 - Exemplos no protótipo: silêncio (0), fala baixa (0,15), fala normal (0,45), fala alta (0,9).
 
-**Mensagens de erro** (curtas, cabem em 204 px):
+**Mensagens de erro** (curtas: no máximo ~22 caracteres para caber em 204 px; medido com DejaVu Sans, a fonte mais larga da pilha):
 
 | Causa | Texto | Visível por |
 | --- | --- | --- |
 | Microfone não abre / foi desconectado | `Microfone indisponível` | 3000 ms + fade 400 ms |
 | Modelo ativo não está no disco | `Modelo não encontrado` | 3000 ms + fade 400 ms |
 | Inferência falhou | `Falha na transcrição` | 3000 ms + fade 400 ms |
-| Colagem falhou (o texto fica no clipboard) | `Texto copiado; cole com Ctrl+V` | 4000 ms + fade 400 ms |
+| Colagem falhou (o texto fica no clipboard) | `Cole com Ctrl+V` (`aria-label`: "Não deu para colar; o texto está copiado, cole com Ctrl+V") | 4000 ms + fade 400 ms |
 | Nenhuma fala detectada | `Nada foi ouvido` | 2000 ms + fade 400 ms |
 
 Depois do tempo, o frontend dispara `Dismiss` (estado `idle`) e a janela esconde. O detalhe do erro fica no log e,
