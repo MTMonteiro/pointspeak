@@ -1,5 +1,8 @@
 //! Pipeline de áudio em memória, sem dispositivo: downmix → resample 16 kHz → RMS → silêncio → buffer.
 //!
+//! A parada por silêncio usa o Silero VAD quando o `src-tauri` entrega um classificador
+//! ([`CapturePipeline::with_classifier`]) e o RMS ([`SilenceDetector`]) como reserva (veja `vad.rs`).
+//!
 //! O `src-tauri` (cpal) só entrega blocos de amostras f32 interleaved para o [`CapturePipeline`].
 //! Tudo aqui é determinístico: a duração vem do número de amostras, nunca do relógio real.
 
@@ -9,6 +12,7 @@ use serde::Serialize;
 use thiserror::Error;
 
 use crate::config::AppConfig;
+use crate::vad::{SilenceMode, SilenceStop, VoiceClassifier};
 
 /// Taxa de saída do pipeline (o Whisper espera 16 kHz mono).
 pub const TARGET_SAMPLE_RATE: u32 = 16_000;
@@ -19,7 +23,8 @@ pub const LEVEL_FLOOR_DB: f32 = -60.0;
 /// Nível em dBFS que vira `level = 1` (voz alta perto do microfone).
 pub const LEVEL_CEIL_DB: f32 = -10.0;
 /// Limiar fixo de fala do [`SilenceDetector`]: RMS da janela acima de -40 dBFS conta como fala.
-/// Valor simples até o Silero VAD (fase 6); ruído de fundo típico de escritório fica abaixo de -50 dBFS.
+/// Reserva do Silero VAD (sem ONNX Runtime ou modelo); ruído de fundo típico de escritório fica
+/// abaixo de -50 dBFS.
 pub const SPEECH_THRESHOLD_DB: f32 = -40.0;
 /// Fala mínima (contínua) antes de o detector armar, para um clique ou estalo não contar como fala.
 pub const MIN_SPEECH_MS: u32 = 90;
@@ -279,7 +284,12 @@ impl SilenceDetector {
             return false;
         }
         self.silent_ms = self.silent_ms.saturating_add(duration_ms);
-        self.silent_ms >= self.timeout_ms
+        self.timed_out()
+    }
+
+    /// O silêncio depois da fala atingiu o tempo limite.
+    pub fn timed_out(&self) -> bool {
+        self.heard_speech && self.silent_ms >= self.timeout_ms
     }
 }
 
@@ -369,13 +379,23 @@ pub struct CapturePipeline {
     resampled: Vec<f32>,
     resampler: MonoResampler,
     meter: LevelMeter,
-    silence: Option<SilenceDetector>,
+    silence: Option<SilenceStop>,
     buffer: RecordingBuffer,
     stop: Option<StopReason>,
 }
 
 impl CapturePipeline {
+    /// Pipeline com a parada por silêncio só por RMS.
     pub fn new(settings: CaptureSettings) -> Result<Self, PipelineError> {
+        Self::with_classifier(settings, None)
+    }
+
+    /// Pipeline com o Silero VAD (`classifier`) na parada por silêncio e o RMS de reserva. Com a
+    /// parada por silêncio desligada o classificador é descartado; sem ele, só RMS.
+    pub fn with_classifier(
+        settings: CaptureSettings,
+        classifier: Option<Box<dyn VoiceClassifier>>,
+    ) -> Result<Self, PipelineError> {
         if settings.channels == 0 {
             return Err(PipelineError::NoChannels);
         }
@@ -385,7 +405,9 @@ impl CapturePipeline {
             resampled: Vec::new(),
             resampler: MonoResampler::new(settings.input_rate)?,
             meter: LevelMeter::new(TARGET_SAMPLE_RATE, LEVEL_WINDOW_MS),
-            silence: settings.silence_timeout_ms.map(SilenceDetector::new),
+            silence: settings
+                .silence_timeout_ms
+                .map(|timeout| SilenceStop::new(timeout, classifier)),
             buffer: RecordingBuffer::for_duration(settings.max_recording_secs),
             stop: None,
         })
@@ -404,12 +426,15 @@ impl CapturePipeline {
         self.resampler.push(&self.mono, &mut self.resampled);
 
         let silence = &mut self.silence;
-        let mut silence_hit = false;
         self.meter.push(&self.resampled, |window_rms| {
             on_level(rms_to_level(window_rms));
-            if let Some(detector) = silence.as_mut() {
-                silence_hit |= detector.push(window_rms, LEVEL_WINDOW_MS);
+            if let Some(stop) = silence.as_mut() {
+                stop.push_rms(window_rms, LEVEL_WINDOW_MS);
             }
+        });
+        let silence_hit = self.silence.as_mut().is_some_and(|stop| {
+            stop.push_audio(&self.resampled);
+            stop.timed_out()
         });
         let full = self.buffer.push(&self.resampled);
 
@@ -430,7 +455,22 @@ impl CapturePipeline {
 
     /// Se o detector de silêncio ouviu fala; `None` com a parada por silêncio desligada (sem detector).
     pub fn heard_speech(&self) -> Option<bool> {
-        self.silence.as_ref().map(SilenceDetector::heard_speech)
+        self.silence.as_ref().map(SilenceStop::heard_speech)
+    }
+
+    /// Quem decide a parada por silêncio agora; `None` com ela desligada.
+    pub fn silence_mode(&self) -> Option<SilenceMode> {
+        self.silence.as_ref().map(SilenceStop::mode)
+    }
+
+    /// Fim da gravação: aplica o que faltava do VAD e devolve o áudio e se houve fala
+    /// (o mesmo que [`heard_speech`](Self::heard_speech) seguido de [`finish`](Self::finish)).
+    pub fn finish_recording(mut self) -> (Vec<f32>, Option<bool>) {
+        if let Some(stop) = self.silence.as_mut() {
+            stop.finish();
+        }
+        let heard_speech = self.heard_speech();
+        (self.finish(), heard_speech)
     }
 
     /// Esvazia o resampler e devolve o áudio gravado (16 kHz mono, no máximo `maxRecordingSecs`).

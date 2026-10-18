@@ -23,6 +23,7 @@ pub mod settings;
 pub mod shortcut;
 pub mod transcriber;
 mod tray;
+pub mod vad;
 
 /// Rótulos das janelas declaradas no `tauri.conf.json`.
 pub const SETTINGS_WINDOW: &str = "settings";

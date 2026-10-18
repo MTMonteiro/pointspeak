@@ -42,7 +42,7 @@ Abra um editor de texto (Bloco de Notas / gedit / Kate) com o cursor numa linha 
 | 3.3 | Toque rápido em `Alt+Z` (< 0,3 s) | HUD aparece e some sem transcrever nem colar | ☐ | ☐ | ☐ |
 | 3.4 | Segurar `Alt+Z` 2 s calado | HUD `Nada foi ouvido` por ~2 s; nada colado | ☐ | ☐ | ☐ |
 | 3.5 | **Toggle** (Configurações → Atalho → Toggle): tocar `Alt+Z`, falar, tocar de novo | Igual a 3.1 | ☐ | ☐ | ☐ |
-| 3.6 | **Silêncio:** Toggle, tocar, falar uma frase e ficar calado | Para sozinho ~2,5 s depois da fala e cola | ☐ | ☐ | ☐ |
+| 3.6 | **Silêncio:** Toggle, tocar, falar uma frase e ficar calado | Para sozinho ~2,5 s depois da fala e cola (com o Silero VAD ativo, veja 8.7) | ☐ | ☐ | ☐ |
 | 3.7 | Apertar `Alt+Z` durante `Transcrevendo...` | Ignorado; o ditado em curso termina normalmente | ☐ | ☐ | ☐ |
 | 3.8 | Ditar em português e em inglês (Idioma `Automático`) | Os dois saem certos | ☐ | ☐ | ☐ |
 
@@ -98,7 +98,7 @@ Abra um editor de texto (Bloco de Notas / gedit / Kate) com o cursor numa linha 
 
 ## 8. Aceleração: ONNX Runtime e hardware
 
-O ONNX Runtime só é carregado (ainda não transcreve: a engine ONNX chega na próxima etapa). Os avisos saem no
+O ONNX Runtime é carregado e roda o Silero VAD da parada por silêncio (ainda não transcreve: a engine ONNX chega na próxima etapa). Os avisos saem no
 terminal como `[pointspeak] ONNX Runtime …`.
 
 | # | Passo | Esperado | Win | X11 | Wayland |
@@ -109,3 +109,7 @@ terminal como `[pointspeak] ONNX Runtime …`.
 | 8.4 | Selecione `NPU (DirectML)` e dite algo | O ditado funciona na CPU e a seção mostra o aviso de fallback para a CPU (esperado até a engine ONNX) | ☐ | — | — |
 | 8.5 | Linux sem ONNX Runtime: abra Configurações → Hardware | DirectML `Disponível só no Windows`; OpenVINO e CUDA `ONNX Runtime não encontrado`; Vulkan `Não incluído nesta versão` | — | ☐ | ☐ |
 | 8.6 | Linux: `./scripts/fetch-onnxruntime.sh linux` e rode com `ORT_DYLIB_PATH=$PWD/target/onnxruntime/linux-x64/libonnxruntime.so target/release/pointspeak` | OpenVINO `Nenhum dispositivo Intel compatível` e CUDA `Nenhuma GPU NVIDIA encontrada` (o pacote oficial só traz a CPU); sem erro de carregamento no terminal | — | ☐ | ☐ |
+| 8.7 | **Silero VAD:** abra o app num terminal e confira a saída | `[pointspeak] Silero VAD carregado de …\resources\silero_vad.onnx` (Linux: com o `ORT_DYLIB_PATH` do 8.6); no Windows o arquivo fica em `resources\` na pasta de instalação e a licença em `licenses\silero_vad-LICENSE.txt` | ☐ | ☐ | ☐ |
+| 8.8 | Com o VAD ativo: Toggle, fale uma frase com pausas curtas entre as palavras e fique calado | Não para nas pausas curtas; para ~2,5 s (`silenceTimeoutMs`) depois da última palavra e cola | ☐ | ☐ | ☐ |
+| 8.9 | Com o VAD ativo: Toggle num ambiente com ruído contínuo (ventilador, música baixa sem voz) e não fale; pare com o atalho | HUD mostra `Nada foi ouvido` (o ruído não conta como fala); as barras do HUD continuam reagindo ao ruído | ☐ | ☐ | ☐ |
+| 8.10 | Sem ONNX Runtime (passo 8.3 no Windows; Linux sem `ORT_DYLIB_PATH`): repita o 3.6 | Para sozinho pelo RMS como antes, sem erro no HUD; no terminal `[pointspeak] VAD: ONNX Runtime indisponível; parada por silêncio pelo RMS` | ☐ | ☐ | ☐ |

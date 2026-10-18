@@ -5,7 +5,8 @@
 //!   plataforma). O callback só converte as amostras para f32 e as envia por um canal limitado,
 //!   sem bloquear: se o canal encher, o bloco é descartado.
 //! - **processamento**: roda o [`CapturePipeline`] do núcleo (downmix, resample 16 kHz, RMS,
-//!   silêncio, limite de duração) e chama `on_level`/`on_auto_stop`.
+//!   silêncio, limite de duração) e chama `on_level`/`on_auto_stop`. Com o Silero VAD, ela só
+//!   enfileira as janelas para a thread do VAD (`vad.rs`) e lê as probabilidades prontas.
 //!
 //! A orquestração (eventos do HUD, atalho) fica em `dictation.rs`.
 
@@ -22,6 +23,7 @@ use pointspeak_core::audio::{
 use pointspeak_core::config::AppConfig;
 use pointspeak_core::dictation::RecordedAudio;
 use pointspeak_core::events::ErrorKind;
+use pointspeak_core::vad::{SilenceMode, VoiceClassifier};
 use serde::{Serialize, Serializer};
 use thiserror::Error;
 
@@ -141,14 +143,27 @@ impl AudioRecorder {
         }
     }
 
-    /// Abre o microfone (`None` = padrão do sistema) e começa a gravar.
+    /// Abre o microfone (`None` = padrão do sistema) e começa a gravar, com a parada por silêncio
+    /// só pelo RMS. Veja [`start_with_classifier`](Self::start_with_classifier).
+    pub fn start(
+        &self,
+        device: Option<&str>,
+        on_level: impl Fn(f32) + Send + 'static,
+        on_auto_stop: impl Fn(Option<StopReason>) + Send + 'static,
+    ) -> Result<RecordingHandle, AudioError> {
+        self.start_with_classifier(device, None, on_level, on_auto_stop)
+    }
+
+    /// Abre o microfone (`None` = padrão do sistema) e começa a gravar. `classifier` = Silero VAD
+    /// na parada por silêncio (`None` = RMS; ignorado com a parada desligada).
     ///
     /// `on_level` recebe o nível 0..=1 a cada 30 ms. `on_auto_stop` é chamado uma vez quando a
     /// gravação deve parar sozinha, com o motivo (silêncio, duração máxima) ou `None` se o microfone
     /// foi desconectado; quem orquestra chama [`RecordingHandle::stop`] em seguida.
-    pub fn start(
+    pub fn start_with_classifier(
         &self,
         device: Option<&str>,
+        classifier: Option<Box<dyn VoiceClassifier>>,
         on_level: impl Fn(f32) + Send + 'static,
         on_auto_stop: impl Fn(Option<StopReason>) + Send + 'static,
     ) -> Result<RecordingHandle, AudioError> {
@@ -180,8 +195,15 @@ impl AudioRecorder {
             silence_timeout_ms: self.silence_timeout_ms,
             max_recording_secs: self.max_recording_secs,
         };
-        let pipeline = match CapturePipeline::new(settings) {
-            Ok(pipeline) => pipeline,
+        let pipeline = match CapturePipeline::with_classifier(settings, classifier) {
+            Ok(pipeline) => {
+                match pipeline.silence_mode() {
+                    Some(SilenceMode::Vad) => log::info!("parada por silêncio: Silero VAD"),
+                    Some(SilenceMode::Rms) => log::info!("parada por silêncio: RMS"),
+                    None => {}
+                }
+                pipeline
+            }
             Err(e) => {
                 let _ = stop_tx.send(());
                 let _ = capture.join();
@@ -325,9 +347,9 @@ fn process_thread(
             on_auto_stop(reason);
         }
     }
-    let heard_speech = pipeline.heard_speech();
+    let (samples, heard_speech) = pipeline.finish_recording();
     RecordedAudio {
-        samples: pipeline.finish(),
+        samples,
         heard_speech,
     }
 }

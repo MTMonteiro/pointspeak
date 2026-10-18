@@ -43,7 +43,7 @@ use crate::hud::HudController;
 use crate::settings::{self, MicTest};
 use crate::shortcut::HotkeyBinding;
 use crate::tray::TrayHandles;
-use crate::{injector, transcriber, AppState, HUD_WINDOW};
+use crate::{injector, transcriber, vad, AppState, HUD_WINDOW};
 
 /// Mensagens do canal do executor.
 enum Msg {
@@ -357,8 +357,15 @@ impl Backend for TauriBackend {
             let _ = app.emit_to(HUD_WINDOW, HUD_AUDIO_LEVEL, AudioLevelPayload::new(level));
         };
         let on_auto_stop = move |reason| inbox.auto_stop(id, reason);
-        match AudioRecorder::from_config(&config).start(
+        // Silero VAD na parada por silêncio; sem ele (ONNX Runtime ou modelo ausente), RMS.
+        let classifier = if config.auto_stop_on_silence {
+            vad::classifier()
+        } else {
+            None
+        };
+        match AudioRecorder::from_config(&config).start_with_classifier(
             config.microphone.as_deref(),
+            classifier,
             on_level,
             on_auto_stop,
         ) {
