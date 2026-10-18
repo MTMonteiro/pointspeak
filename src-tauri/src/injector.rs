@@ -231,6 +231,26 @@ fn is_executable(path: &Path) -> bool {
     path.is_file()
 }
 
+/// Pede ao SO para não guardar o texto no histórico do clipboard: no Windows, fora do histórico
+/// (Win+V) e da sincronização na nuvem; no Linux, a dica `x-kde-passwordManagerHint` que o Klipper e
+/// outros gerenciadores respeitam. O app em foco cola normalmente.
+fn private(set: arboard::Set<'_>) -> arboard::Set<'_> {
+    #[cfg(windows)]
+    {
+        use arboard::SetExtWindows;
+        set.exclude_from_history().exclude_from_cloud()
+    }
+    #[cfg(target_os = "linux")]
+    {
+        use arboard::SetExtLinux;
+        set.exclude_from_history()
+    }
+    #[cfg(not(any(windows, target_os = "linux")))]
+    {
+        set
+    }
+}
+
 /// Adapta o `arboard::Clipboard` à sequência pura.
 struct ArboardClipboard<'a>(&'a mut Clipboard);
 
@@ -244,7 +264,7 @@ impl ClipboardLike for ArboardClipboard<'_> {
     }
 
     fn set_text(&mut self, text: &str) -> Result<(), ClipboardError> {
-        self.0.set_text(text).map_err(clipboard_error)
+        private(self.0.set()).text(text).map_err(clipboard_error)
     }
 
     fn clear(&mut self) -> Result<(), ClipboardError> {
