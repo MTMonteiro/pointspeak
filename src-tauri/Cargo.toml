@@ -17,11 +17,24 @@ tauri-build = { version = "2", features = [] }
 # Clipboard do injector (texto e imagem, para salvar e restaurar o do usuário).
 arboard = "3.7"
 cpal = "0.18"
+# Só com a feature `vulkan`: confere se o loader do Vulkan existe (detecção de hardware).
+libloading = { version = "0.9", optional = true }
 # Teclas simuladas da colagem (Ctrl+V / Shift+Insert). No Linux, X11 via x11rb (sem libxdo).
 enigo = "0.6"
 log = "0.4"
 # Núcleos físicos para as threads do whisper.cpp.
 num_cpus = "1"
+# ONNX Runtime carregado em tempo de execução (`load-dynamic`): nada é baixado nem linkado no build;
+# a biblioteca vem do `ORT_DYLIB_PATH`, da pasta de recursos ou de junto do executável (veja
+# `src/onnx.rs`). `api-24` = ONNX Runtime 1.24+ (o `scripts/fetch-onnxruntime.sh` baixa a 1.24.4).
+ort = { version = "=2.0.0-rc.14", default-features = false, features = [
+    "api-24",
+    "cuda",
+    "directml",
+    "load-dynamic",
+    "openvino",
+    "std",
+] }
 pointspeak-core = { path = "../crates/pointspeak-core" }
 # Download dos modelos: rustls (ring) em vez de OpenSSL, para o build cruzado do Windows.
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls"] }
@@ -55,4 +68,4 @@ tempfile = "3"
 default = []
 # Aceleração do whisper.cpp por GPU: opcionais, desligadas por padrão e fora do .exe.
 cuda = ["whisper-rs/cuda"]
-vulkan = ["whisper-rs/vulkan"]
+vulkan = ["dep:libloading", "whisper-rs/vulkan"]

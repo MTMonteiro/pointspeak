@@ -3,6 +3,7 @@
 # pelo caminho documentado do Tauri v2: cargo-xwin + x86_64-pc-windows-msvc + NSIS.
 # Pré-requisito (uma vez por máquina): ./scripts/setup-windows-cross.sh
 # Saída: target/x86_64-pc-windows-msvc/release/bundle/nsis/PointSpeak_<versão>_x64-setup.exe
+# (com onnxruntime.dll + DirectML.dll do ./scripts/fetch-onnxruntime.sh ao lado do pointspeak.exe)
 # Sem assinatura de código: o Windows SmartScreen avisa ao abrir (esperado).
 set -euo pipefail
 
@@ -46,7 +47,13 @@ if [ ! -d node_modules ]; then
   npm ci --no-audit --no-fund
 fi
 
-npx tauri build --runner cargo-xwin --target "$TARGET" --bundles nsis
+# ONNX Runtime (DirectML) carregado em tempo de execução: as DLLs entram no instalador como
+# recursos, ao lado do pointspeak.exe. A config de overlay só é usada aqui, para o `cargo build`
+# do Linux e o `generate_context!` não exigirem os arquivos.
+"$ROOT/scripts/fetch-onnxruntime.sh" windows
+ORT_OVERLAY="$ROOT/src-tauri/tauri.onnxruntime-windows.conf.json"
+
+npx tauri build --runner cargo-xwin --target "$TARGET" --bundles nsis --config "$ORT_OVERLAY"
 
 VERSION="$(node -p "require('./src-tauri/tauri.conf.json').version")"
 EXE="$ROOT/target/$TARGET/release/bundle/nsis/PointSpeak_${VERSION}_x64-setup.exe"
@@ -59,3 +66,19 @@ echo "$EXE"
 if command -v file >/dev/null 2>&1; then
   file "$EXE"
 fi
+
+# load-dynamic: o .exe não pode importar o onnxruntime.dll (senão nem abre sem ele).
+APP="$ROOT/target/$TARGET/release/pointspeak.exe"
+if llvm-objdump -p "$APP" | grep -i 'DLL Name: onnxruntime' >/dev/null; then
+  echo "build-windows.sh: pointspeak.exe importa o onnxruntime.dll de forma estática" >&2
+  exit 1
+fi
+NSI="$ROOT/target/$TARGET/release/nsis/x64/installer.nsi"
+for dll in onnxruntime.dll DirectML.dll; do
+  if ! grep -F "$dll" "$NSI" >/dev/null; then
+    echo "build-windows.sh: $dll não está no instalador ($NSI)" >&2
+    exit 1
+  fi
+done
+echo "build-windows.sh: onnxruntime.dll e DirectML.dll no instalador; pointspeak.exe sem import estático do ONNX Runtime"
+ls -l "$EXE"

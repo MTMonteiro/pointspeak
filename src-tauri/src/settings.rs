@@ -2,7 +2,8 @@
 //!
 //! - **Motor:** `get_engine_status` e o evento `engine://status` (emitido pelo executor do ditado a
 //!   cada mudança do modelo ou da pausa, e pelo `set_config` quando o backend muda).
-//! - **Hardware:** `list_backends`, com a lista pura de `pointspeak_core::settings::backend_options`.
+//! - **Hardware:** `list_backends`, com a lista pura de `pointspeak_core::settings::backend_options`
+//!   sobre a detecção feita uma vez em `onnx.rs`.
 //! - **Teste de microfone:** `start_mic_test`/`stop_mic_test`. O [`MicTest`] abre o microfone só
 //!   para o medidor (nada é gravado) e emite `settings://mic-level` para a janela `settings`. Um
 //!   ditado que começa para o teste ([`MicTest::stop_for_dictation`]); microfone perdido também
@@ -27,18 +28,24 @@ use pointspeak_core::events::{
 };
 use pointspeak_core::hud::HudState;
 use pointspeak_core::settings::{
-    backend_options, engine_status, file_manager, AppFolder, BackendOption, MicTestError, TargetOs,
-    COMPILED_BACKENDS, MIC_TEST_BUSY,
+    backend_options, engine_backends, engine_status, file_manager, AppFolder, BackendOption,
+    MicTestError, TargetOs, MIC_TEST_BUSY,
 };
 use tauri::{AppHandle, Emitter, Manager, Runtime, State};
 
 use crate::audio::{AudioError, AudioRecorder, RecordingHandle};
 use crate::dictation::DictationHandle;
+use crate::onnx;
 use crate::{AppState, SETTINGS_WINDOW};
 
-/// Cartões de hardware deste build.
-fn options() -> Vec<BackendOption> {
-    backend_options(TargetOs::current(), &COMPILED_BACKENDS)
+/// Cartões de hardware desta máquina (a detecção roda uma vez, veja `onnx::hardware`).
+fn options<R: Runtime>(app: &AppHandle<R>) -> Vec<BackendOption> {
+    backend_options(TargetOs::current(), onnx::hardware(app))
+}
+
+/// Backends com engine de transcrição neste build.
+fn engines() -> Vec<pointspeak_core::config::Backend> {
+    engine_backends(cfg!(feature = "vulkan"))
 }
 
 fn payload<R: Runtime>(
@@ -48,7 +55,7 @@ fn payload<R: Runtime>(
 ) -> EngineStatusPayload {
     let state = app.state::<AppState>();
     let config = state.config.lock().unwrap_or_else(|e| e.into_inner());
-    engine_status(&config, status, paused, &options())
+    engine_status(&config, status, paused, &options(app), &engines())
 }
 
 /// Emite `engine://status` para a janela `settings`.
@@ -76,10 +83,11 @@ pub fn get_engine_status(
     payload(&app, status, paused)
 }
 
-/// Comando Tauri: cartões da seção Hardware, na ordem do design.
-#[tauri::command]
-pub fn list_backends() -> Vec<BackendOption> {
-    options()
+/// Comando Tauri: cartões da seção Hardware, na ordem do design. Fora da thread principal: a
+/// primeira chamada pode esperar a detecção.
+#[tauri::command(async)]
+pub fn list_backends(app: AppHandle) -> Vec<BackendOption> {
+    options(&app)
 }
 
 /// Texto do erro do teste para uma falha ao abrir o microfone.
@@ -544,9 +552,10 @@ mod tests {
 
     #[test]
     fn hardware_lists_the_five_cards_with_cpu_available() {
-        let options = list_backends();
+        // Sem `resource_dir` e sem depender de o ONNX Runtime estar presente na máquina.
+        let options = backend_options(TargetOs::current(), &onnx::detect(None));
         assert_eq!(options.len(), 5);
-        assert!(options.iter().filter(|o| o.available).count() == 1);
         assert!(options[4].available);
+        assert_eq!(engines()[0], pointspeak_core::config::Backend::Cpu);
     }
 }

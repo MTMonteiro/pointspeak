@@ -1,0 +1,11 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "bundle": {
+    "resources": {
+      "../target/onnxruntime/windows-x64/onnxruntime.dll": "onnxruntime.dll",
+      "../target/onnxruntime/windows-x64/DirectML.dll": "DirectML.dll",
+      "../target/onnxruntime/windows-x64/onnxruntime-LICENSE.txt": "licenses/onnxruntime-LICENSE.txt",
+      "../target/onnxruntime/windows-x64/DirectML-LICENSE.txt": "licenses/DirectML-LICENSE.txt"
+    }
+  }
+}

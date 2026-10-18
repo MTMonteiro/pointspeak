@@ -18,6 +18,7 @@ pub mod dictation;
 pub mod hud;
 pub mod injector;
 pub mod models;
+pub mod onnx;
 pub mod settings;
 pub mod shortcut;
 pub mod transcriber;
@@ -83,6 +84,7 @@ pub fn run() {
             let display = hud.display_server();
             app.manage(hud);
             models::init(handle)?;
+            onnx::detect_in_background(handle);
             app.manage(tray::build(handle)?);
             app.manage(settings::MicTest::new(
                 settings::CpalMic,
