@@ -95,3 +95,17 @@ Abra um editor de texto (Bloco de Notas / gedit / Kate) com o cursor numa linha 
 | 7.6 | Configurações → Microfone → `Testar microfone`; fale e depois pare | Medidor responde à voz; o teste não grava áudio e encerra ao sair da seção | ☐ | ☐ | ☐ |
 | 7.7 | Ative o tema escuro do sistema e abra cada seção de Configurações | Texto, estados de erro/aviso, rádios, barras e botões seguem legíveis | ☐ | ☐ | ☐ |
 | 7.8 | Reduza a janela de Configurações para 360 × 480 px e percorra as seções | Navegação, caminho longo da pasta e cartões cabem sem rolagem horizontal | ☐ | ☐ | ☐ |
+
+## 8. Aceleração: ONNX Runtime e hardware
+
+O ONNX Runtime só é carregado (ainda não transcreve: a engine ONNX chega na próxima etapa). Os avisos saem no
+terminal como `[pointspeak] ONNX Runtime …`.
+
+| # | Passo | Esperado | Win | X11 | Wayland |
+| --- | --- | --- | --- | --- | --- |
+| 8.1 | Abra a pasta de instalação (`%LOCALAPPDATA%\PointSpeak` ou a escolhida no instalador) | `onnxruntime.dll` e `DirectML.dll` ao lado do `pointspeak.exe`; licenças em `licenses\` | ☐ | — | — |
+| 8.2 | Configurações → Hardware num PC com GPU/NPU DirectX 12 | `NPU (DirectML)` disponível (detalhe com o fabricante, quando o Windows informa); OpenVINO `Nenhum dispositivo Intel compatível`, CUDA `Nenhuma GPU NVIDIA encontrada`, Vulkan `Não incluído nesta versão`, CPU `Sempre disponível` | ☐ | — | — |
+| 8.3 | Feche o app, renomeie o `onnxruntime.dll` da pasta de instalação e abra de novo | O app abre normalmente; DirectML, OpenVINO e CUDA com `ONNX Runtime não encontrado`; ditado segue na CPU. Desfaça a troca de nome depois | ☐ | — | — |
+| 8.4 | Selecione `NPU (DirectML)` e dite algo | O ditado funciona na CPU e a seção mostra o aviso de fallback para a CPU (esperado até a engine ONNX) | ☐ | — | — |
+| 8.5 | Linux sem ONNX Runtime: abra Configurações → Hardware | DirectML `Disponível só no Windows`; OpenVINO e CUDA `ONNX Runtime não encontrado`; Vulkan `Não incluído nesta versão` | — | ☐ | ☐ |
+| 8.6 | Linux: `./scripts/fetch-onnxruntime.sh linux` e rode com `ORT_DYLIB_PATH=$PWD/target/onnxruntime/linux-x64/libonnxruntime.so target/release/pointspeak` | OpenVINO `Nenhum dispositivo Intel compatível` e CUDA `Nenhuma GPU NVIDIA encontrada` (o pacote oficial só traz a CPU); sem erro de carregamento no terminal | — | ☐ | ☐ |
