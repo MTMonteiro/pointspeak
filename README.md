@@ -91,6 +91,12 @@ a transcrição roda (Automático, NPU/GPU via DirectML no Windows, ou CPU). Pel
   `Start-Process "$env:LOCALAPPDATA\PointSpeak\pointspeak.exe" -RedirectStandardError "$env:TEMP\pointspeak.log"`;
   as mensagens ficam nesse arquivo (o app ainda não grava log próprio: a pasta de logs das Configurações
   fica vazia).
+- **A NPU não aparece em uso no Gerenciador de Tarefas:** com `NPU (DirectML)` (ou `Automático`) escolhido, veja
+  o rodapé das Configurações. `Pronto · <modelo> · DirectML · NPU` = a transcrição roda na NPU (o gráfico só sobe
+  enquanto transcreve). `· CPU` = a variante ONNX do modelo não foi baixada (em **Modelos**, com o DirectML
+  escolhido, o modelo aparece como `Baixar`: baixe-o de novo) ou a aceleração falhou (veja o aviso em
+  **Hardware**). `· DirectML · GPU` = a NPU não iniciou ou não abriu o modelo e a GPU assumiu; o motivo aparece
+  em **Hardware**. O cartão `NPU (DirectML)` diz se o Windows encontrou uma NPU (`NPU detectada`).
 - **`Microfone indisponível`:** confira o microfone em **Configurações → Microfone** (**Testar microfone**)
   e nas permissões de microfone do sistema.
 - **`Nada foi ouvido`:** a gravação ficou sem fala (ou foi curta demais). Fale mais perto do microfone ou
