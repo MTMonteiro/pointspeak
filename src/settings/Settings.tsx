@@ -24,6 +24,8 @@ import {
   Select,
   Switch,
 } from "./components";
+import { HardwareSection } from "./HardwareSection";
+import { ModelSection } from "./ModelSection";
 import { useConfig } from "./useConfig";
 import "./Settings.css";
 
@@ -156,7 +158,7 @@ function EngineStatusView({ status }: { status: EngineStatus | null }) {
 }
 
 export function Settings() {
-  const { config, errors, loadError, saved, update } = useConfig();
+  const { config, errors, loadError, saved, update, adopt } = useConfig();
   const value = config ?? DEFAULT_CONFIG;
   const [activeSection, setActiveSection] = useState<SectionId>(sectionFromHash);
   const activeSectionRef = useRef(activeSection);
@@ -469,10 +471,18 @@ export function Settings() {
 
           <section className="settings-section" id="modelos" aria-labelledby="section-modelos" hidden={activeSection !== "modelos"}>
             <h2 id="section-modelos">Modelos</h2>
+            <ModelSection onActiveModel={adopt} />
           </section>
 
           <section className="settings-section" id="hardware" aria-labelledby="section-hardware" hidden={activeSection !== "hardware"}>
             <h2 id="section-hardware">Hardware</h2>
+            <HardwareSection
+              config={value}
+              ready={config !== null}
+              error={errors.backend}
+              engineStatus={engineStatus}
+              onBackendChange={(backend) => void update({ backend })}
+            />
           </section>
 
           <section className="settings-section" id="idioma" aria-labelledby="section-idioma" hidden={activeSection !== "idioma"}>

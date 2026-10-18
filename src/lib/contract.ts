@@ -51,6 +51,40 @@ export type EngineStatus = {
   paused: boolean;
 };
 
+export type ModelState =
+  | { state: "notDownloaded" }
+  | { state: "downloading"; done: number; total: number }
+  | { state: "verifying" }
+  | { state: "ready" }
+  | { state: "active" }
+  | { state: "failed"; reason: string };
+
+/** Mirrors the flattened `ModelEntry` and `ModelsOverview` returned by `list_models`. */
+export type ModelEntry = {
+  id: ModelId;
+  fileName: string;
+  sizeBytes: number;
+  sha256: string;
+  displaySize: string;
+  description: string;
+  recommended: boolean;
+} & ModelState;
+
+export type ModelsOverview = {
+  models: ModelEntry[];
+  dir: string;
+  usedBytes: number;
+};
+
+export const MODELS_PROGRESS = "models://progress";
+export type ModelProgressPayload = {
+  id: ModelId;
+  state: ModelState["state"];
+  done: number;
+  total: number;
+  reason?: string;
+};
+
 export type SettingsMicLevelPayload = AudioLevelPayload;
 export type MicTestEndedPayload = {
   reason: "dictation" | "deviceLost";
