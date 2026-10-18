@@ -1,0 +1,175 @@
+{
+  "appConfig": {
+    "autoStopOnSilence": true,
+    "backend": "directml",
+    "hotkey": "Ctrl+Shift+Space",
+    "hotkeyMode": "toggle",
+    "language": "auto",
+    "maxRecordingSecs": 180,
+    "microphone": "USB Microphone",
+    "model": "tiny",
+    "silenceTimeoutMs": 2500
+  },
+  "audioLevel": {
+    "level": 0.625
+  },
+  "backends": [
+    {
+      "available": false,
+      "backend": "directml",
+      "reason": "Disponível só no Windows"
+    },
+    {
+      "available": true,
+      "backend": "openvino",
+      "detail": "Intel Core Ultra com NPU"
+    },
+    {
+      "available": true,
+      "backend": "vulkan",
+      "detail": "Driver Vulkan encontrado"
+    },
+    {
+      "available": false,
+      "backend": "cuda",
+      "reason": "Nenhuma GPU NVIDIA encontrada"
+    },
+    {
+      "available": true,
+      "backend": "cpu",
+      "detail": "Sempre disponível"
+    }
+  ],
+  "engineStatus": {
+    "backend": "cpu",
+    "model": "tiny",
+    "paused": false,
+    "status": "loaded"
+  },
+  "engineStatusFallback": {
+    "backend": "cpu",
+    "fallbackReason": "DirectML não iniciou: provider indisponível",
+    "model": "tiny",
+    "paused": false,
+    "status": "loaded"
+  },
+  "modelFailedProgress": {
+    "done": 0,
+    "id": "large-v3-turbo",
+    "reason": "Download falhou: conexão perdida",
+    "state": "failed",
+    "total": 1624555275
+  },
+  "modelProgress": {
+    "done": 44385440,
+    "id": "base",
+    "state": "downloading",
+    "total": 147951465
+  },
+  "modelsGgml": {
+    "dir": "/models/ggml",
+    "models": [
+      {
+        "description": "Mais rápido, menos preciso",
+        "displaySize": "75 MB",
+        "fileName": "ggml-tiny.bin",
+        "id": "tiny",
+        "recommended": false,
+        "sha256": "be07e048e1e599ad46341c8d2a135645097a538221678b7acdd1b1919c6e1b21",
+        "sizeBytes": 77691713,
+        "state": "active"
+      },
+      {
+        "description": "Equilíbrio, recomendado",
+        "displaySize": "142 MB",
+        "done": 44385440,
+        "fileName": "ggml-base.bin",
+        "id": "base",
+        "recommended": true,
+        "sha256": "60ed5bc3dd14eea856493d334349b405782ddcaf0028d4b5df4088345fba2efe",
+        "sizeBytes": 147951465,
+        "state": "downloading",
+        "total": 147951465
+      },
+      {
+        "description": "Mais preciso, mais lento",
+        "displaySize": "466 MB",
+        "fileName": "ggml-small.bin",
+        "id": "small",
+        "recommended": false,
+        "sha256": "1be3a9b2063867b937e64e2ec7483364a79917e157fa98c5d94b5c1fffea987b",
+        "sizeBytes": 487601967,
+        "state": "notDownloaded"
+      },
+      {
+        "description": "O mais preciso; pede GPU/NPU",
+        "displaySize": "1,6 GB",
+        "fileName": "ggml-large-v3-turbo.bin",
+        "id": "large-v3-turbo",
+        "reason": "Download falhou: conexão perdida",
+        "recommended": false,
+        "sha256": "1fc70f774d38eb169993ac391eea357ef47c88757ef72ee5943879b7e8e2bc69",
+        "sizeBytes": 1624555275,
+        "state": "failed"
+      }
+    ],
+    "usedBytes": 77691713
+  },
+  "modelsOnnx": {
+    "dir": "/models/onnx",
+    "models": [
+      {
+        "description": "Mais rápido, menos preciso",
+        "displaySize": "75 MB",
+        "fileName": "onnx-tiny",
+        "id": "tiny",
+        "recommended": false,
+        "sha256": "",
+        "sizeBytes": 77184276,
+        "state": "active"
+      },
+      {
+        "description": "Equilíbrio, recomendado",
+        "displaySize": "142 MB",
+        "done": 44385440,
+        "fileName": "onnx-base",
+        "id": "base",
+        "recommended": true,
+        "sha256": "",
+        "sizeBytes": 147131618,
+        "state": "downloading",
+        "total": 147951465
+      },
+      {
+        "description": "Mais preciso, mais lento",
+        "displaySize": "466 MB",
+        "fileName": "onnx-small",
+        "id": "small",
+        "recommended": false,
+        "sha256": "",
+        "sizeBytes": 486262020,
+        "state": "notDownloaded"
+      },
+      {
+        "description": "O mais preciso; pede GPU/NPU",
+        "displaySize": "1,6 GB",
+        "fileName": "onnx-large-v3-turbo",
+        "id": "large-v3-turbo",
+        "reason": "Download falhou: conexão perdida",
+        "recommended": false,
+        "sha256": "",
+        "sizeBytes": 1619641148,
+        "state": "failed"
+      }
+    ],
+    "usedBytes": 77184276
+  },
+  "stateChanged": {
+    "anchor": "end",
+    "state": "recording"
+  },
+  "stateChangedPasteError": {
+    "message": "Falha ao colar",
+    "state": "error"
+  }
+}
