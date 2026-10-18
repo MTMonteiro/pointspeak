@@ -6,10 +6,11 @@ use std::sync::Mutex;
 use pointspeak_core::config::AppConfig;
 use pointspeak_core::hud::HudMachine;
 use pointspeak_core::transcriber::EngineSlot;
-use tauri::WindowEvent;
+use tauri::{Manager, WindowEvent};
 
 pub mod audio;
 mod config;
+pub mod hud;
 pub mod models;
 pub mod transcriber;
 mod tray;
@@ -48,6 +49,8 @@ pub fn run() {
         ])
         .setup(|app| {
             config::init(app.handle())?;
+            // HUD sem atalho ainda: a orquestração (atalho → gravar → HUD) vem na etapa seguinte.
+            app.manage(hud::HudController::new(app.handle().clone()));
             models::init(app.handle())?;
             tray::build(app.handle())?;
             Ok(())

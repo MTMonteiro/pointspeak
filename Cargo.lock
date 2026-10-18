@@ -2726,6 +2726,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.21",
  "whisper-rs",
+ "windows",
 ]
 
 [[package]]

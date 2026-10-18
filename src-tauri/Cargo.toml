@@ -29,6 +29,11 @@ thiserror = "2"
 # whisper.cpp estático; padrão = CPU. Logs do whisper.cpp vão para o `log` (veja `transcriber.rs`).
 whisper-rs = { version = "0.16", features = ["log_backend"] }
 
+# Win32: mostrar o HUD sem ativar a janela (`ShowWindow(SW_SHOWNOACTIVATE)`, veja `src/hud.rs`).
+# Mesma versão que o Tauri usa, para o `HWND` do `WebviewWindow::hwnd()` ser o mesmo tipo.
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging"] }
+
 [dev-dependencies]
 hound = "3"
 tempfile = "3"
