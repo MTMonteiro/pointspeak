@@ -722,7 +722,7 @@ mod tests {
         h.key(KeyAction::Pressed, t0);
         h.key(KeyAction::Released, t0 + Duration::from_secs(1));
         h.wait_for(&Call::Inject("olá".into()));
-        h.expect(&[Call::State(HudState::Error, Some("Cole com Ctrl+V"))]);
+        h.expect(&[Call::State(HudState::Error, Some("Falha ao colar"))]);
     }
 
     #[test]

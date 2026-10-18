@@ -9,11 +9,7 @@ const errors = [
   ["Microfone indisponível", "Microfone indisponível", 3000],
   ["Modelo não encontrado", "Modelo não encontrado", 3000],
   ["Falha na transcrição", "Falha na transcrição", 3000],
-  [
-    "Cole com Ctrl+V",
-    "Não deu para colar; o texto está copiado, cole com Ctrl+V",
-    4000,
-  ],
+  ["Falha ao colar", "Não foi possível colar o texto", 4000],
   ["Nada foi ouvido", "Nada foi ouvido", 2000],
 ] as const;
 
