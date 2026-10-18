@@ -62,6 +62,8 @@ fn clipboard_is_restored_when_paste_fails() {
         [
             "get_text",
             "set_text:texto transcrito",
+            // Leitura de volta que confere o texto antes de colar.
+            "get_text",
             "set_text:clipboard do usuário"
         ]
     );
