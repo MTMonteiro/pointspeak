@@ -5,6 +5,7 @@
 
 use rubato::audioadapter_buffers::direct::InterleavedSlice;
 use rubato::{Fft, FixedSync, Indexing, Resampler};
+use serde::Serialize;
 use thiserror::Error;
 
 use crate::config::AppConfig;
@@ -25,6 +26,14 @@ pub const MIN_SPEECH_MS: u32 = 90;
 
 /// Bloco de entrada do resampler, em quadros (~21 ms a 48 kHz).
 const RESAMPLER_CHUNK: usize = 1024;
+
+/// Microfone listado pelo comando `list_microphones` (o `name` é o valor salvo em `AppConfig::microphone`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MicrophoneInfo {
+    pub name: String,
+    pub is_default: bool,
+}
 
 /// Parâmetros do dispositivo que o pipeline não aceita.
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
@@ -469,6 +478,18 @@ mod tests {
 
     fn settings(rate: u32, channels: u16) -> CaptureSettings {
         CaptureSettings::from_config(rate, channels, &AppConfig::default())
+    }
+
+    #[test]
+    fn microphone_info_json() {
+        let info = MicrophoneInfo {
+            name: "USB Mic".into(),
+            is_default: true,
+        };
+        assert_eq!(
+            serde_json::to_string(&info).unwrap(),
+            r#"{"name":"USB Mic","isDefault":true}"#
+        );
     }
 
     #[test]

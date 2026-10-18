@@ -2531,11 +2531,13 @@ version = "0.1.0"
 dependencies = [
  "cpal",
  "pointspeak-core",
+ "serde",
  "serde_json",
  "tauri",
  "tauri-build",
  "tauri-plugin-global-shortcut",
  "tempfile",
+ "thiserror 2.0.21",
 ]
 
 [[package]]
