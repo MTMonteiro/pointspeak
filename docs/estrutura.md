@@ -26,9 +26,12 @@ Onde fica cada coisa (atualize quando criar ou mover pastas).
   - `src/styles.css`: entrada do Tailwind
 - `Cargo.toml`, `Cargo.lock`, `rust-toolchain.toml`: workspace Cargo (`src-tauri` e `crates/pointspeak-core`)
 - `crates/pointspeak-core/`: núcleo em Rust puro, testável sem sistema
+  - `src/config.rs`: `AppConfig` (padrões, serde camelCase, `validate()`/`sanitized()`) e `ModelId`
+  - `src/events.rs`: nomes e payloads dos eventos `hud://state-changed` e `hud://audio-level`; `ErrorKind` com as mensagens do HUD
+  - `src/hotkey.rs`: `HotkeyController` (Push-to-Talk/Toggle, autorepeat, gravação curta) e parser de acelerador (`Alt+Z`)
   - `src/hud.rs`: máquina de estados do HUD (`Idle`, `Recording`, `Transcribing`, `Success`, `Error`)
 - `src-tauri/`: app Tauri v2 (crate `pointspeak`)
   - `tauri.conf.json`: identificador, janelas `settings` e `hud`, bundle (nsis, deb, appimage; WebView2 `embedBootstrapper` no Windows)
   - `capabilities/`: permissões das janelas
   - `icons/`: ícones gerados por `npx tauri icon src-tauri/app-icon.png -o src-tauri/icons`
-  - `src/lib.rs`: montagem do app (plugins, estado, janelas); `src/tray.rs`: bandeja; `src/main.rs`: ponto de entrada
+  - `src/lib.rs`: montagem do app (plugins, estado, janelas, comandos); `src/config.rs`: `config.json` e comandos `get_config`/`set_config`; `src/tray.rs`: bandeja; `src/main.rs`: ponto de entrada

@@ -5,8 +5,11 @@
 
 use std::fmt;
 
-/// Estado visível do HUD.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+use serde::Serialize;
+
+/// Estado visível do HUD. Serializa com o mesmo nome de [`HudState::as_str`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize)]
+#[serde(rename_all = "lowercase")]
 pub enum HudState {
     /// HUD oculto, esperando o atalho.
     #[default]

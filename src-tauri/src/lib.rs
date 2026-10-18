@@ -3,9 +3,11 @@
 
 use std::sync::Mutex;
 
+use pointspeak_core::config::AppConfig;
 use pointspeak_core::hud::HudMachine;
 use tauri::WindowEvent;
 
+mod config;
 mod tray;
 
 /// Rótulos das janelas declaradas no `tauri.conf.json`.
@@ -16,6 +18,8 @@ pub const HUD_WINDOW: &str = "hud";
 #[derive(Default)]
 pub struct AppState {
     pub hud: Mutex<HudMachine>,
+    /// Configuração atual; carregada do `config.json` no `setup`.
+    pub config: Mutex<AppConfig>,
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -24,7 +28,12 @@ pub fn run() {
         // Plugin registrado sem atalho: o atalho entra na fase de integração com o SO.
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .manage(AppState::default())
+        .invoke_handler(tauri::generate_handler![
+            config::get_config,
+            config::set_config
+        ])
         .setup(|app| {
+            config::init(app.handle())?;
             tray::build(app.handle())?;
             Ok(())
         })
@@ -51,5 +60,6 @@ mod tests {
         let state = AppState::default();
         let hud = state.hud.lock().unwrap();
         assert_eq!(hud.state(), HudState::Idle);
+        assert_eq!(*state.config.lock().unwrap(), AppConfig::default());
     }
 }

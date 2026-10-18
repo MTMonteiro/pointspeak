@@ -6,9 +6,11 @@
 - **Linguagens:** Rust (edition 2021) e TypeScript (strict).
 - **App desktop:** Tauri v2 (`src-tauri/`), com `tauri-plugin-global-shortcut` e ícone na bandeja (feature `tray-icon`).
 - **Frontend:** React 18 + Vite + Tailwind CSS v4 (plugin `@tailwindcss/vite`). Uma página por janela: `hud.html` e `settings.html`.
-- **Núcleo:** `crates/pointspeak-core`, Rust puro sem dependências de sistema (hoje: máquina de estados do HUD).
+- **Núcleo:** `crates/pointspeak-core`, Rust puro sem dependências de sistema (só `serde` e `thiserror`): máquina de estados do HUD, contrato dos eventos, configuração e lógica do atalho (PTT/Toggle).
+- **Configuração:** `AppConfig` em `app_config_dir()/config.json` (JSON camelCase; `~/.config/com.pointspeak.app/` no Linux, `%APPDATA%\com.pointspeak.app\` no Windows). Escrita atômica (arquivo `.tmp` + rename). Arquivo ausente ou corrompido carrega os padrões (com log no stderr); campo inválido volta ao padrão e os demais são mantidos. Comandos Tauri: `get_config` e `set_config(config)` (valida, grava e devolve o erro em PT-BR).
+- **Eventos backend → HUD:** `hud://state-changed` com `{ state: "idle|recording|transcribing|success|error", message?: string }` (`message` só no erro, texto curto do `docs/design/DESIGN.md` §3) e `hud://audio-level` com `{ level: 0..1 }`. Constantes e payloads em `pointspeak-core/src/events.rs`.
 - **Planejado para as próximas fases** (ainda não adicionado): `cpal` + `rubato` (áudio), `whisper-rs` (whisper.cpp), `ort` (ONNX Runtime, NPU/DirectML), `arboard` + `enigo` (+ `wtype`/`ydotool` no Wayland), `x11rb` / crate `windows`, `reqwest` (rustls) + `sha2` (download de modelos).
-- **Testes:** `cargo test` + `clippy` + `rustfmt`; Vitest + Testing Library (jsdom), com mock de `@tauri-apps/api` em `src/test/tauri-mock.ts`.
+- **Testes:** `cargo test` + `clippy` + `rustfmt` (`tempfile` como dev-dependency do `src-tauri` para testar a persistência); Vitest + Testing Library (jsdom), com mock de `@tauri-apps/api` em `src/test/tauri-mock.ts`.
 - **Lint:** ESLint flat config (`eslint.config.js`) com typescript-eslint e react-hooks, sem warnings.
 - **Infra (Windows):** compilação cruzada com `cargo-xwin` + target `x86_64-pc-windows-msvc` + NSIS + lld/llvm, gerando o instalador `.exe` (veja **Instalador Windows** abaixo).
 - **Toolchain:** `rust-toolchain.toml` usa o canal `stable` e garante os componentes `rustfmt` e `clippy`.
