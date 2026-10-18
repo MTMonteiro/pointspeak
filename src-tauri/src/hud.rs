@@ -20,7 +20,7 @@
 //!   estado (orquestração) junta `anchor()` ao payload com `StateChangedPayload::with_anchor`.
 
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
 use std::thread::{self, Thread};
 use std::time::{Duration, Instant};
 
@@ -84,7 +84,7 @@ impl HudController {
 
     /// Âncora atual da pílula, para o payload de `hud://state-changed`.
     pub fn anchor(&self) -> HudAnchor {
-        *self.shared.anchor.lock().unwrap()
+        *lock(&self.shared.anchor)
     }
 
     /// Guarda a âncora; se mudou, reemite `hud://state-changed` com o estado atual e a âncora.
@@ -208,9 +208,15 @@ fn follow_placement(cursor: PhysicalPosition<f64>, monitors: &[Monitor]) -> Opti
     ))
 }
 
+/// Trava sem pânico: um lock envenenado (pânico em outra thread) segue com o valor que ficou, para o
+/// HUD não derrubar o app.
+fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
 /// Move a janela (se a posição mudou) e atualiza a âncora.
 fn apply(app: &AppHandle, shared: &Shared, window: &WebviewWindow, placement: HudPlacement) {
-    let mut last = shared.last.lock().unwrap();
+    let mut last = lock(&shared.last);
     if *last != Some(placement) {
         if let Err(err) = window.set_position(PhysicalPosition::new(placement.x, placement.y)) {
             log::warn!("HUD: não foi possível posicionar a janela: {err}");
@@ -224,13 +230,13 @@ fn apply(app: &AppHandle, shared: &Shared, window: &WebviewWindow, placement: Hu
 
 fn set_anchor(app: &AppHandle, shared: &Shared, anchor: HudAnchor) {
     {
-        let mut current = shared.anchor.lock().unwrap();
+        let mut current = lock(&shared.anchor);
         if *current == anchor {
             return;
         }
         *current = anchor;
     }
-    let state = *app.state::<AppState>().hud.lock().unwrap();
+    let state = *lock(&app.state::<AppState>().hud);
     let payload = StateChangedPayload::new(state).with_anchor(anchor);
     if let Err(err) = app.emit_to(HUD_WINDOW, HUD_STATE_CHANGED, payload) {
         log::warn!("HUD: falha ao emitir a âncora: {err}");
@@ -376,6 +382,19 @@ mod tests {
         tracker.resume();
         assert!(rx.recv_timeout(WAIT).is_ok());
         tracker.pause();
+    }
+
+    #[test]
+    fn poisoned_lock_keeps_the_value() {
+        let shared = Arc::new(Shared::default());
+        let poisoner = Arc::clone(&shared);
+        let _ = thread::spawn(move || {
+            let _guard = poisoner.anchor.lock();
+            panic!("pânico com o lock da âncora");
+        })
+        .join();
+        assert!(shared.anchor.is_poisoned());
+        assert_eq!(*lock(&shared.anchor), HudAnchor::default());
     }
 
     #[test]
