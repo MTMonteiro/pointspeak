@@ -15,5 +15,9 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 pointspeak-core = { path = "../crates/pointspeak-core" }
+serde_json = "1"
 tauri = { version = "2", features = ["tray-icon"] }
 tauri-plugin-global-shortcut = "2"
+
+[dev-dependencies]
+tempfile = "3"
