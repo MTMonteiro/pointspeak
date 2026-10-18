@@ -5,11 +5,13 @@ use std::sync::Mutex;
 
 use pointspeak_core::config::AppConfig;
 use pointspeak_core::hud::HudMachine;
+use pointspeak_core::transcriber::EngineSlot;
 use tauri::WindowEvent;
 
 pub mod audio;
 mod config;
 pub mod models;
+pub mod transcriber;
 mod tray;
 
 /// Rótulos das janelas declaradas no `tauri.conf.json`.
@@ -22,6 +24,8 @@ pub struct AppState {
     pub hud: Mutex<HudMachine>,
     /// Configuração atual; carregada do `config.json` no `setup`.
     pub config: Mutex<AppConfig>,
+    /// Engine de transcrição carregada (lazy: no primeiro ditado, via `transcriber::ensure_loaded`).
+    pub transcriber: Mutex<EngineSlot>,
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -71,5 +75,6 @@ mod tests {
         let hud = state.hud.lock().unwrap();
         assert_eq!(hud.state(), HudState::Idle);
         assert_eq!(*state.config.lock().unwrap(), AppConfig::default());
+        assert!(state.transcriber.lock().unwrap().loaded_model().is_none());
     }
 }
