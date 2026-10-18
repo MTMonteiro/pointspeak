@@ -104,6 +104,13 @@ export function useConfig() {
     });
   }, []);
 
+  const adopt = useCallback((value: AppConfig) => {
+    configRef.current = value;
+    persistedRef.current = value;
+    setConfig(value);
+    setErrors({});
+  }, []);
+
   return {
     config,
     errors,
@@ -111,5 +118,6 @@ export function useConfig() {
     loading: config === null && loadError === undefined,
     saved,
     update,
+    adopt,
   };
 }
