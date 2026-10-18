@@ -39,7 +39,9 @@ fn overlays_put_the_library_at_the_resource_dir_root() {
             "{file}: {name} fora da raiz dos recursos ({targets:?})"
         );
         assert!(
-            targets.iter().any(|t| t == "licenses/onnxruntime-LICENSE.txt"),
+            targets
+                .iter()
+                .any(|t| t == "licenses/onnxruntime-LICENSE.txt"),
             "{file}: licença do ONNX Runtime ausente"
         );
     }
