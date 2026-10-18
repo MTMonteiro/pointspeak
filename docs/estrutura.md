@@ -9,7 +9,9 @@ Onde fica cada coisa (atualize quando criar ou mover pastas).
 - `docs/`: produto, tecnologia e esta estrutura
   - `docs/design/`: visual do app (DESIGN.md e telas), mantido pela persona `designer`; criado na fase de design (ainda não existe)
   - `docs/memoria/`: aprendizados entre tasks
+- `scripts/build-windows.sh`: gera o instalador Windows (.exe NSIS) por compilação cruzada
 - `scripts/setup-linux.sh`: instala as libs de sistema do Linux (apt, idempotente)
+- `scripts/setup-windows-cross.sh`: prepara a compilação cruzada para Windows (nsis, lld/llvm, target msvc, cargo-xwin)
 - `package.json`, `package-lock.json`: frontend e scripts `lint`, `test`, `build`
 - `hud.html`, `settings.html`: páginas de entrada das duas janelas do Tauri
 - `vite.config.ts`: build (multi-página) e config do Vitest
@@ -23,7 +25,7 @@ Onde fica cada coisa (atualize quando criar ou mover pastas).
 - `crates/pointspeak-core/`: núcleo em Rust puro, testável sem sistema
   - `src/hud.rs`: máquina de estados do HUD (`Idle`, `Recording`, `Transcribing`, `Success`, `Error`)
 - `src-tauri/`: app Tauri v2 (crate `pointspeak`)
-  - `tauri.conf.json`: identificador, janelas `settings` e `hud`, bundle (nsis, deb, appimage)
+  - `tauri.conf.json`: identificador, janelas `settings` e `hud`, bundle (nsis, deb, appimage; WebView2 `embedBootstrapper` no Windows)
   - `capabilities/`: permissões das janelas
   - `icons/`: ícones gerados por `npx tauri icon src-tauri/app-icon.png -o src-tauri/icons`
   - `src/lib.rs`: montagem do app (plugins, estado, janelas); `src/tray.rs`: bandeja; `src/main.rs`: ponto de entrada
