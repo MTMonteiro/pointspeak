@@ -10,6 +10,8 @@
 use std::fmt;
 use std::time::{Duration, Instant};
 
+use serde::Serialize;
+
 use crate::audio::StopReason;
 use crate::events::{ErrorKind, StateChangedPayload};
 use crate::hotkey::{HotkeyController, HotkeyMode, KeyAction};
@@ -53,8 +55,9 @@ impl RecordedAudio {
     }
 }
 
-/// Situação do modelo de transcrição, para a linha de estado da bandeja.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+/// Situação do modelo de transcrição, para a linha de estado da bandeja e o `engine://status`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub enum ModelStatus {
     /// Nenhum modelo escolhido no `AppConfig`.
     #[default]
@@ -171,6 +174,10 @@ impl Dictation {
 
     pub fn is_paused(&self) -> bool {
         self.paused
+    }
+
+    pub fn model_status(&self) -> ModelStatus {
+        self.model
     }
 
     /// Linha de estado atual da bandeja.

@@ -11,10 +11,27 @@
 //! Para a janela de Configurações:
 //! - `models://progress`: `{ "id", "state", "done", "total", "reason"? }` a cada mudança de estado de
 //!   um modelo (download, verificação, pronto, falha). `reason` só no estado `failed`.
+//! - `engine://status`: `{ "model": ModelId|null, "status": "notSelected|loading|loaded|failed",
+//!   "backend": "cpu|…", "paused": bool }` a cada mudança do modelo, do backend ou da pausa. `backend`
+//!   é o efetivo ([`crate::settings::effective_backend`]: `auto` já resolvido). Mesmo payload do
+//!   comando `get_engine_status`. Os textos do rodapé ficam com o frontend.
+//! - `settings://mic-level`: `{ "level": 0..=1 }` a cada ~30 ms durante o teste de microfone
+//!   (`start_mic_test`/`stop_mic_test`); nada é gravado.
+//! - `settings://mic-test-ended`: `{ "reason": "dictation|deviceLost", "message"? }` quando o teste
+//!   para sem o `stop_mic_test`: um ditado começou ou o microfone caiu (`message` com o texto do
+//!   design). O `stop_mic_test` não emite.
+//!
+//! Comandos da janela de Configurações (`src-tauri/src/settings.rs`; erros como string em PT-BR):
+//! `get_engine_status`, `list_backends` (cartões de [`crate::settings::backend_options`]),
+//! `start_mic_test { microphone: string|null }` (recusa durante um ditado), `stop_mic_test`,
+//! `open_models_dir`, `open_logs_dir`, `suspend_hotkey { suspended: bool }` (solta o atalho global
+//! enquanto a tela captura uma combinação, sem mexer no config nem na pausa). A versão (Sobre) vem do
+//! `getVersion` de `@tauri-apps/api/app`, sem comando próprio.
 
 use serde::Serialize;
 
-use crate::config::ModelId;
+use crate::config::{Backend, ModelId};
+use crate::dictation::ModelStatus;
 use crate::hud::HudState;
 use crate::hud_layout::HudAnchor;
 use crate::models::ModelState;
@@ -26,6 +43,13 @@ pub const HUD_AUDIO_LEVEL: &str = "hud://audio-level";
 
 /// Nome do evento com o progresso e o estado de um modelo (Model Manager).
 pub const MODELS_PROGRESS: &str = "models://progress";
+
+/// Estado do motor de transcrição (rodapé das Configurações).
+pub const ENGINE_STATUS: &str = "engine://status";
+/// Nível do microfone durante o teste das Configurações.
+pub const SETTINGS_MIC_LEVEL: &str = "settings://mic-level";
+/// O teste de microfone parou sem o `stop_mic_test`.
+pub const SETTINGS_MIC_TEST_ENDED: &str = "settings://mic-test-ended";
 
 /// Máximo de caracteres de uma mensagem de erro do HUD (cabe nos 204 px da pílula).
 pub const MAX_ERROR_MESSAGE_CHARS: usize = 22;
@@ -154,6 +178,50 @@ impl ModelProgressPayload {
     }
 }
 
+/// Payload de `engine://status` (e resposta do `get_engine_status`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EngineStatusPayload {
+    pub model: Option<ModelId>,
+    pub status: ModelStatus,
+    pub backend: Backend,
+    pub paused: bool,
+}
+
+/// Por que o teste de microfone parou sozinho.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum MicTestEndReason {
+    /// Um ditado começou e precisa do microfone.
+    Dictation,
+    /// O microfone foi desconectado ou falhou.
+    DeviceLost,
+}
+
+/// Payload de `settings://mic-test-ended`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct MicTestEndedPayload {
+    pub reason: MicTestEndReason,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message: Option<&'static str>,
+}
+
+impl MicTestEndedPayload {
+    pub fn dictation() -> Self {
+        Self {
+            reason: MicTestEndReason::Dictation,
+            message: None,
+        }
+    }
+
+    pub fn device_lost() -> Self {
+        Self {
+            reason: MicTestEndReason::DeviceLost,
+            message: Some(crate::settings::MicTestError::Disconnected.message()),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -164,6 +232,51 @@ mod tests {
         assert_eq!(HUD_STATE_CHANGED, "hud://state-changed");
         assert_eq!(HUD_AUDIO_LEVEL, "hud://audio-level");
         assert_eq!(MODELS_PROGRESS, "models://progress");
+        assert_eq!(ENGINE_STATUS, "engine://status");
+        assert_eq!(SETTINGS_MIC_LEVEL, "settings://mic-level");
+        assert_eq!(SETTINGS_MIC_TEST_ENDED, "settings://mic-test-ended");
+    }
+
+    #[test]
+    fn engine_status_payload_json() {
+        let loaded = EngineStatusPayload {
+            model: Some(ModelId::LargeV3Turbo),
+            status: ModelStatus::Loaded,
+            backend: Backend::Cpu,
+            paused: false,
+        };
+        assert_eq!(
+            serde_json::to_value(loaded).unwrap(),
+            json!({ "model": "large-v3-turbo", "status": "loaded", "backend": "cpu", "paused": false })
+        );
+        let none = EngineStatusPayload {
+            model: None,
+            status: ModelStatus::NotSelected,
+            backend: Backend::Cpu,
+            paused: true,
+        };
+        assert_eq!(
+            serde_json::to_value(none).unwrap(),
+            json!({ "model": null, "status": "notSelected", "backend": "cpu", "paused": true })
+        );
+        for (status, name) in [
+            (ModelStatus::Loading, "loading"),
+            (ModelStatus::Failed, "failed"),
+        ] {
+            assert_eq!(serde_json::to_value(status).unwrap(), name);
+        }
+    }
+
+    #[test]
+    fn mic_test_ended_payload_json() {
+        assert_eq!(
+            serde_json::to_value(MicTestEndedPayload::dictation()).unwrap(),
+            json!({ "reason": "dictation" })
+        );
+        assert_eq!(
+            serde_json::to_value(MicTestEndedPayload::device_lost()).unwrap(),
+            json!({ "reason": "deviceLost", "message": "O dispositivo foi desconectado" })
+        );
     }
 
     #[test]

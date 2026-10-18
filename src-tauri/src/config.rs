@@ -117,6 +117,7 @@ pub fn set_config(
         return Err(format!("Não foi possível salvar as configurações: {e}"));
     }
     let model_changed = current.model != config.model;
+    let backend_changed = current.backend != config.backend;
     *current = config.clone();
     drop(current);
     app.state::<DictationHandle>().send(Input::ConfigChanged {
@@ -125,6 +126,8 @@ pub fn set_config(
     });
     if model_changed {
         dictation::reload_model(&app);
+    } else if backend_changed {
+        crate::settings::refresh_engine_status(&app);
     }
     Ok(config)
 }

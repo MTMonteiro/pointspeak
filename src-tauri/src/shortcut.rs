@@ -8,7 +8,7 @@
 use std::sync::Mutex;
 
 use pointspeak_core::hotkey::Accelerator;
-use tauri::{AppHandle, Runtime};
+use tauri::{AppHandle, Runtime, State};
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut};
 
 /// Converte o atalho do núcleo no do plugin. `None` só para tecla fora da lista do parser.
@@ -146,7 +146,28 @@ pub fn conflict_message(hotkey: &str) -> String {
     format!("{hotkey} já é usado por outro app ou pelo sistema. Escolha outra combinação.")
 }
 
-/// Atalho do ditado: o desejado e se está registrado no SO (não fica registrado em pausa).
+/// Registro no SO, separado do [`HotkeyBinding`] para os testes usarem um fake.
+pub trait Registrar {
+    fn register(&self, shortcut: Shortcut) -> Result<(), String>;
+    fn unregister(&self, shortcut: Shortcut) -> Result<(), String>;
+}
+
+impl<R: Runtime> Registrar for AppHandle<R> {
+    fn register(&self, shortcut: Shortcut) -> Result<(), String> {
+        self.global_shortcut()
+            .register(shortcut)
+            .map_err(|e| e.to_string())
+    }
+
+    fn unregister(&self, shortcut: Shortcut) -> Result<(), String> {
+        self.global_shortcut()
+            .unregister(shortcut)
+            .map_err(|e| e.to_string())
+    }
+}
+
+/// Atalho do ditado: o desejado e se está registrado no SO. Não fica registrado em pausa (bandeja)
+/// nem suspenso (a tela de Atalho capturando uma combinação); as duas coisas são independentes.
 #[derive(Default)]
 pub struct HotkeyBinding {
     inner: Mutex<Binding>,
@@ -157,14 +178,16 @@ struct Binding {
     wanted: Option<Shortcut>,
     registered: bool,
     paused: bool,
+    suspended: bool,
 }
 
 impl HotkeyBinding {
     /// Troca o atalho. Registra o novo antes de soltar o antigo: se o SO recusar (conflito), o
     /// antigo continua valendo e o erro sai em PT-BR. Em pausa só guarda o novo para o `resume`.
-    pub fn rebind<R: Runtime>(
+    /// Suspenso, confere o conflito registrando e soltando o novo na hora, e guarda.
+    pub fn rebind(
         &self,
-        app: &AppHandle<R>,
+        registrar: &impl Registrar,
         shortcut: Shortcut,
         label: &str,
     ) -> Result<(), String> {
@@ -176,13 +199,19 @@ impl HotkeyBinding {
         if b.registered && b.wanted == Some(shortcut) {
             return Ok(());
         }
-        let gs = app.global_shortcut();
-        gs.register(shortcut).map_err(|e| {
+        registrar.register(shortcut).map_err(|e| {
             log::warn!("atalho {label} recusado: {e}");
             conflict_message(label)
         })?;
+        if b.suspended {
+            if let Err(e) = registrar.unregister(shortcut) {
+                log::warn!("não foi possível soltar o atalho suspenso: {e}");
+            }
+            b.wanted = Some(shortcut);
+            return Ok(());
+        }
         if let (true, Some(old)) = (b.registered, b.wanted) {
-            if let Err(e) = gs.unregister(old) {
+            if let Err(e) = registrar.unregister(old) {
                 log::warn!("não foi possível soltar o atalho antigo: {e}");
             }
         }
@@ -192,27 +221,34 @@ impl HotkeyBinding {
     }
 
     /// Solta o atalho (pausa do ditado); o desejado fica guardado.
-    pub fn pause<R: Runtime>(&self, app: &AppHandle<R>) {
+    pub fn pause(&self, registrar: &impl Registrar) {
         let mut b = self.lock();
         b.paused = true;
-        if let (true, Some(old)) = (b.registered, b.wanted) {
-            if let Err(e) = app.global_shortcut().unregister(old) {
-                log::warn!("não foi possível soltar o atalho na pausa: {e}");
-            }
-        }
-        b.registered = false;
+        b.release(registrar);
     }
 
-    /// Registra de novo o atalho guardado.
-    pub fn resume<R: Runtime>(&self, app: &AppHandle<R>) {
+    /// Registra de novo o atalho guardado (se não estiver suspenso).
+    pub fn resume(&self, registrar: &impl Registrar) {
         let mut b = self.lock();
         b.paused = false;
-        if let (false, Some(shortcut)) = (b.registered, b.wanted) {
-            match app.global_shortcut().register(shortcut) {
-                Ok(()) => b.registered = true,
-                Err(e) => eprintln!("[pointspeak] não foi possível registrar o atalho: {e}"),
-            }
+        if let Err(e) = b.restore(registrar) {
+            eprintln!("[pointspeak] não foi possível registrar o atalho: {e}");
         }
+    }
+
+    /// Solta (`true`) ou devolve (`false`) o atalho enquanto a tela captura uma combinação, sem
+    /// mexer no config nem na pausa. Em pausa, `false` não registra nada (o `resume` registra).
+    pub fn suspend(&self, registrar: &impl Registrar, suspended: bool) -> Result<(), String> {
+        let mut b = self.lock();
+        b.suspended = suspended;
+        if suspended {
+            b.release(registrar);
+            return Ok(());
+        }
+        b.restore(registrar).map_err(|e| {
+            log::warn!("não foi possível registrar o atalho de novo: {e}");
+            "Não foi possível reativar o atalho. Escolha outra combinação.".to_string()
+        })
     }
 
     /// O atalho desejado é este (para ignorar eventos de outro atalho registrado por engano).
@@ -225,9 +261,44 @@ impl HotkeyBinding {
     }
 }
 
+impl Binding {
+    fn release(&mut self, registrar: &impl Registrar) {
+        if let (true, Some(old)) = (self.registered, self.wanted) {
+            if let Err(e) = registrar.unregister(old) {
+                log::warn!("não foi possível soltar o atalho: {e}");
+            }
+        }
+        self.registered = false;
+    }
+
+    /// Registra o desejado se nada impede (pausa ou suspensão) e ainda não está registrado.
+    fn restore(&mut self, registrar: &impl Registrar) -> Result<(), String> {
+        if self.paused || self.suspended || self.registered {
+            return Ok(());
+        }
+        if let Some(shortcut) = self.wanted {
+            registrar.register(shortcut)?;
+            self.registered = true;
+        }
+        Ok(())
+    }
+}
+
+/// Comando Tauri: suspende o atalho global enquanto a seção Atalho captura uma combinação, para a
+/// captura não disparar o ditado. Síncrono de propósito: roda na thread principal (veja o topo).
+#[tauri::command]
+pub fn suspend_hotkey(
+    app: AppHandle,
+    binding: State<'_, HotkeyBinding>,
+    suspended: bool,
+) -> Result<(), String> {
+    binding.suspend(&app, suspended)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::RefCell;
 
     fn shortcut(text: &str) -> Shortcut {
         to_shortcut(&Accelerator::parse(text).unwrap()).unwrap()
@@ -305,6 +376,112 @@ mod tests {
             "Use ao menos um modificador (Ctrl, Alt, Shift ou Super) com uma tecla."
         );
         assert!(parse("Ctrl+Space").is_ok());
+    }
+
+    /// Fake do SO: registra o que foi pedido e recusa os atalhos de `taken`.
+    #[derive(Default)]
+    struct FakeOs {
+        taken: Vec<Shortcut>,
+        registered: RefCell<Vec<Shortcut>>,
+        calls: RefCell<Vec<String>>,
+    }
+
+    impl Registrar for FakeOs {
+        fn register(&self, shortcut: Shortcut) -> Result<(), String> {
+            self.calls
+                .borrow_mut()
+                .push(format!("+{}", shortcut.into_string()));
+            if self.taken.contains(&shortcut) {
+                return Err("HotKey already registered".into());
+            }
+            self.registered.borrow_mut().push(shortcut);
+            Ok(())
+        }
+        fn unregister(&self, shortcut: Shortcut) -> Result<(), String> {
+            self.calls
+                .borrow_mut()
+                .push(format!("-{}", shortcut.into_string()));
+            self.registered.borrow_mut().retain(|s| *s != shortcut);
+            Ok(())
+        }
+    }
+
+    impl FakeOs {
+        fn registered(&self) -> Vec<Shortcut> {
+            self.registered.borrow().clone()
+        }
+    }
+
+    #[test]
+    fn suspend_releases_and_restores_the_hotkey() {
+        let os = FakeOs::default();
+        let binding = HotkeyBinding::default();
+        binding.rebind(&os, shortcut("Alt+Z"), "Alt+Z").unwrap();
+        binding.suspend(&os, true).unwrap();
+        assert!(os.registered().is_empty());
+        // Suspender de novo não solta duas vezes.
+        binding.suspend(&os, true).unwrap();
+        binding.suspend(&os, false).unwrap();
+        assert_eq!(os.registered(), [shortcut("Alt+Z")]);
+        assert_eq!(os.calls.borrow().len(), 3);
+        assert!(binding.is_current(&shortcut("Alt+Z")));
+    }
+
+    #[test]
+    fn suspend_and_pause_are_independent() {
+        let os = FakeOs::default();
+        let binding = HotkeyBinding::default();
+        binding.rebind(&os, shortcut("Alt+Z"), "Alt+Z").unwrap();
+        binding.pause(&os);
+        binding.suspend(&os, true).unwrap();
+        // Fim da captura com o ditado pausado: segue solto até o `resume`.
+        binding.suspend(&os, false).unwrap();
+        assert!(os.registered().is_empty());
+        binding.resume(&os);
+        assert_eq!(os.registered(), [shortcut("Alt+Z")]);
+        // Retomar durante a captura não registra; o fim da captura registra.
+        binding.suspend(&os, true).unwrap();
+        binding.pause(&os);
+        binding.resume(&os);
+        assert!(os.registered().is_empty());
+        binding.suspend(&os, false).unwrap();
+        assert_eq!(os.registered(), [shortcut("Alt+Z")]);
+    }
+
+    #[test]
+    fn rebind_while_suspended_checks_conflict_and_stays_released() {
+        let os = FakeOs {
+            taken: vec![shortcut("Ctrl+Space")],
+            ..FakeOs::default()
+        };
+        let binding = HotkeyBinding::default();
+        binding.rebind(&os, shortcut("Alt+Z"), "Alt+Z").unwrap();
+        binding.suspend(&os, true).unwrap();
+        assert_eq!(
+            binding
+                .rebind(&os, shortcut("Ctrl+Space"), "Ctrl+Space")
+                .unwrap_err(),
+            conflict_message("Ctrl+Space")
+        );
+        binding.rebind(&os, shortcut("Alt+X"), "Alt+X").unwrap();
+        assert!(os.registered().is_empty());
+        binding.suspend(&os, false).unwrap();
+        assert_eq!(os.registered(), [shortcut("Alt+X")]);
+    }
+
+    #[test]
+    fn conflict_keeps_the_old_hotkey() {
+        let os = FakeOs {
+            taken: vec![shortcut("Ctrl+Space")],
+            ..FakeOs::default()
+        };
+        let binding = HotkeyBinding::default();
+        binding.rebind(&os, shortcut("Alt+Z"), "Alt+Z").unwrap();
+        assert!(binding
+            .rebind(&os, shortcut("Ctrl+Space"), "Ctrl+Space")
+            .is_err());
+        assert_eq!(os.registered(), [shortcut("Alt+Z")]);
+        assert!(binding.is_current(&shortcut("Alt+Z")));
     }
 
     #[test]

@@ -13,13 +13,16 @@
 //!   (do callback do medidor, a cada janela de 30 ms) vão só para a janela `hud`.
 //! - **Atalho:** registrar/soltar roda na thread principal (`run_on_main_thread`, sem esperar);
 //!   veja `shortcut.rs`.
+//! - **Motor:** a cada mudança do estado do modelo ou da pausa, [`Backend::engine_changed`] emite
+//!   `engine://status` para a janela `settings` (`settings.rs`); o espelho fica no [`DictationHandle`].
+//! - **Teste de microfone:** abrir a gravação fecha antes o teste das Configurações, se houver.
 //! - **Modelo:** [`reload_model`] carrega o modelo do config em segundo plano (no `setup` e quando
 //!   o modelo ativo muda) e informa a bandeja; o ditado sem engine carregada carrega na hora (lazy).
 
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Instant;
 
@@ -37,6 +40,7 @@ use tauri::{AppHandle, Emitter, Manager};
 
 use crate::audio::{AudioRecorder, RecordingHandle};
 use crate::hud::HudController;
+use crate::settings::{self, MicTest};
 use crate::shortcut::HotkeyBinding;
 use crate::tray::TrayHandles;
 use crate::{injector, transcriber, AppState, HUD_WINDOW};
@@ -84,12 +88,16 @@ pub trait Backend: Send + 'static {
     fn emit_state(&mut self, payload: StateChangedPayload);
     fn update_tray(&mut self, status: &TrayStatus);
     fn set_paused(&mut self, paused: bool);
+    /// O estado do modelo ou a pausa mudou (`engine://status`).
+    fn engine_changed(&mut self, status: ModelStatus, paused: bool);
 }
 
 /// Estado gerenciado do Tauri: envia entradas ao executor.
 pub struct DictationHandle {
     inbox: Inbox,
     paused: Arc<AtomicBool>,
+    /// Espelho do estado do modelo na máquina (para o `get_engine_status`).
+    model: Arc<Mutex<ModelStatus>>,
     model_generation: AtomicU64,
 }
 
@@ -103,6 +111,12 @@ impl DictationHandle {
         self.paused.load(Ordering::SeqCst)
     }
 
+    /// Estado do modelo e pausa, como no último `engine://status`.
+    pub fn engine(&self) -> (ModelStatus, bool) {
+        let status = *self.model.lock().unwrap_or_else(|e| e.into_inner());
+        (status, self.is_paused())
+    }
+
     #[cfg(test)]
     fn shutdown(&self) {
         let _ = self.inbox.0.send(Msg::Shutdown);
@@ -114,11 +128,14 @@ pub fn spawn<B: Backend>(machine: Dictation, backend: B) -> DictationHandle {
     let (tx, rx) = mpsc::channel();
     let inbox = Inbox(tx);
     let paused = Arc::new(AtomicBool::new(machine.is_paused()));
+    let model = Arc::new(Mutex::new(machine.model_status()));
     let mut executor = Executor {
         machine,
         backend,
         inbox: inbox.clone(),
         paused: Arc::clone(&paused),
+        model: Arc::clone(&model),
+        engine: None,
         recording_id: 0,
         recording: false,
         recorded: None,
@@ -132,6 +149,7 @@ pub fn spawn<B: Backend>(machine: Dictation, backend: B) -> DictationHandle {
     DictationHandle {
         inbox,
         paused,
+        model,
         model_generation: AtomicU64::new(0),
     }
 }
@@ -141,6 +159,9 @@ struct Executor<B> {
     backend: B,
     inbox: Inbox,
     paused: Arc<AtomicBool>,
+    model: Arc<Mutex<ModelStatus>>,
+    /// Último estado do motor avisado ao backend.
+    engine: Option<(ModelStatus, bool)>,
     /// Número da gravação atual (descarta `AutoStop` atrasado de uma gravação anterior).
     recording_id: u64,
     recording: bool,
@@ -155,6 +176,7 @@ impl<B: Backend> Executor<B> {
     fn run(&mut self, rx: Receiver<Msg>) {
         let start = self.machine.start();
         self.apply(start);
+        self.sync_engine();
         loop {
             let msg = match self.dismiss_at {
                 Some(at) => match rx.recv_timeout(at.saturating_duration_since(Instant::now())) {
@@ -189,6 +211,16 @@ impl<B: Backend> Executor<B> {
                 let effects = self.machine.handle(input);
                 self.apply(effects);
             }
+            self.sync_engine();
+        }
+    }
+
+    fn sync_engine(&mut self) {
+        let engine = (self.machine.model_status(), self.machine.is_paused());
+        if self.engine != Some(engine) {
+            self.engine = Some(engine);
+            *self.model.lock().unwrap_or_else(|e| e.into_inner()) = engine.0;
+            self.backend.engine_changed(engine.0, engine.1);
         }
     }
 
@@ -316,6 +348,9 @@ impl TauriBackend {
 
 impl Backend for TauriBackend {
     fn start_recording(&mut self, id: u64, inbox: Inbox) -> bool {
+        if let Some(test) = self.app.try_state::<MicTest>() {
+            test.stop_for_dictation();
+        }
         let config = current_config(&self.app);
         let app = self.app.clone();
         let on_level = move |level: f32| {
@@ -431,6 +466,10 @@ impl Backend for TauriBackend {
             eprintln!("[pointspeak] não foi possível trocar o atalho na pausa: {e}");
         }
     }
+
+    fn engine_changed(&mut self, status: ModelStatus, paused: bool) {
+        settings::emit_engine_status(&self.app, status, paused);
+    }
 }
 
 #[cfg(test)]
@@ -465,10 +504,12 @@ mod tests {
         text: Result<String, ErrorKind>,
         paste: Result<(), ErrorKind>,
         inbox: Arc<Mutex<Option<(u64, Inbox)>>>,
+        /// `engine_changed` vai num canal à parte, para não mexer na ordem das outras chamadas.
+        engine: Sender<(ModelStatus, bool)>,
     }
 
     impl Fake {
-        fn new(calls: Sender<Call>) -> Self {
+        fn new(calls: Sender<Call>, engine: Sender<(ModelStatus, bool)>) -> Self {
             Self {
                 calls,
                 mic_ok: true,
@@ -479,6 +520,7 @@ mod tests {
                 text: Ok("olá".into()),
                 paste: Ok(()),
                 inbox: Arc::default(),
+                engine,
             }
         }
 
@@ -522,24 +564,30 @@ mod tests {
         fn set_paused(&mut self, paused: bool) {
             self.log(Call::Paused(paused));
         }
+        fn engine_changed(&mut self, status: ModelStatus, paused: bool) {
+            let _ = self.engine.send((status, paused));
+        }
     }
 
     struct Harness {
         handle: DictationHandle,
         calls: Receiver<Call>,
+        engine: Receiver<(ModelStatus, bool)>,
         inbox: Arc<Mutex<Option<(u64, Inbox)>>>,
     }
 
     impl Harness {
         fn new(mode: HotkeyMode, setup: impl FnOnce(&mut Fake)) -> Self {
             let (tx, calls) = mpsc::channel();
-            let mut fake = Fake::new(tx);
+            let (engine_tx, engine) = mpsc::channel();
+            let mut fake = Fake::new(tx, engine_tx);
             setup(&mut fake);
             let inbox = Arc::clone(&fake.inbox);
             let handle = spawn(Dictation::new("Alt+Z", mode, ModelStatus::Loaded), fake);
             let h = Self {
                 handle,
                 calls,
+                engine,
                 inbox,
             };
             h.expect(&[Call::Tray(TrayStatus::Ready("Alt+Z".into()))]);
@@ -684,6 +732,35 @@ mod tests {
             Call::Tray(TrayStatus::Ready("Alt+Z".into())),
         ]);
         assert!(!h.handle.is_paused());
+    }
+
+    #[test]
+    fn engine_changes_reach_backend_and_mirror() {
+        let h = Harness::new(HotkeyMode::PushToTalk, |_| {});
+        let next = || {
+            h.engine
+                .recv_timeout(WAIT)
+                .expect("engine_changed não veio")
+        };
+        assert_eq!(next(), (ModelStatus::Loaded, false));
+        h.handle.send(Input::Model(ModelStatus::Loading));
+        assert_eq!(next(), (ModelStatus::Loading, false));
+        // Repetir o mesmo estado não avisa de novo.
+        h.handle.send(Input::Model(ModelStatus::Loading));
+        h.handle.send(Input::Pause);
+        assert_eq!(next(), (ModelStatus::Loading, true));
+        assert_eq!(h.handle.engine(), (ModelStatus::Loading, true));
+        h.handle.send(Input::Model(ModelStatus::Failed));
+        h.handle.send(Input::Resume);
+        assert_eq!(next(), (ModelStatus::Failed, true));
+        assert_eq!(next(), (ModelStatus::Failed, false));
+        // Um ditado inteiro não muda o motor.
+        let t0 = Instant::now();
+        h.key(KeyAction::Pressed, t0);
+        h.key(KeyAction::Released, t0 + Duration::from_secs(1));
+        h.wait_for(&Call::Hide);
+        assert!(h.engine.try_recv().is_err());
+        assert_eq!(h.handle.engine(), (ModelStatus::Failed, false));
     }
 
     #[test]
