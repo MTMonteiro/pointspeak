@@ -1,7 +1,11 @@
 //! Contrato dos eventos que o backend emite para a janela do HUD (`docs/design/DESIGN.md`, §3).
 //!
-//! - `hud://state-changed`: `{ "state": "idle|recording|transcribing|success|error", "message"?: string }`.
-//!   `message` só aparece no estado `error`, com o texto curto da tabela de erros do design.
+//! - `hud://state-changed`: `{ "state": "idle|recording|transcribing|success|error", "message"?: string,
+//!   "anchor"?: "start|end|center" }`. `message` só aparece no estado `error`, com o texto curto da
+//!   tabela de erros do design. `anchor` é o lado em que a pílula se alinha na janela (`data-anchor`,
+//!   §3.1; veja [`crate::hud_layout::HudAnchor`]): vai quando o backend sabe a posição do HUD e é
+//!   repetido a cada troca de âncora (cursor perto da borda direita), sem evento próprio. Ausente,
+//!   o frontend mantém a última âncora recebida (inicialmente `start`).
 //! - `hud://audio-level`: `{ "level": 0..=1 }`, RMS normalizado, a cada ~30 ms durante a gravação.
 //!
 //! Para a janela de Configurações:
@@ -12,6 +16,7 @@ use serde::Serialize;
 
 use crate::config::ModelId;
 use crate::hud::HudState;
+use crate::hud_layout::HudAnchor;
 use crate::models::ModelState;
 
 /// Nome do evento emitido a cada transição da máquina de estados do HUD.
@@ -67,6 +72,8 @@ pub struct StateChangedPayload {
     pub state: HudState,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub message: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub anchor: Option<HudAnchor>,
 }
 
 impl StateChangedPayload {
@@ -75,6 +82,7 @@ impl StateChangedPayload {
         Self {
             state,
             message: None,
+            anchor: None,
         }
     }
 
@@ -83,7 +91,14 @@ impl StateChangedPayload {
         Self {
             state: HudState::Error,
             message: Some(kind.message()),
+            anchor: None,
         }
+    }
+
+    /// Mesmo payload com a âncora da pílula.
+    pub fn with_anchor(mut self, anchor: HudAnchor) -> Self {
+        self.anchor = Some(anchor);
+        self
     }
 }
 
@@ -206,6 +221,20 @@ mod tests {
             let value = serde_json::to_value(StateChangedPayload::new(state)).unwrap();
             assert_eq!(value["state"], state.as_str());
         }
+    }
+
+    #[test]
+    fn state_payload_carries_optional_anchor() {
+        let value = serde_json::to_value(
+            StateChangedPayload::new(HudState::Recording).with_anchor(HudAnchor::End),
+        )
+        .unwrap();
+        assert_eq!(value, json!({ "state": "recording", "anchor": "end" }));
+        let error = StateChangedPayload::error(ErrorKind::NoSpeech).with_anchor(HudAnchor::Center);
+        assert_eq!(
+            serde_json::to_value(error).unwrap(),
+            json!({ "state": "error", "message": "Nada foi ouvido", "anchor": "center" })
+        );
     }
 
     #[test]
