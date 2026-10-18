@@ -83,6 +83,7 @@ Abra um editor de texto (Bloco de Notas / gedit / Kate) com o cursor numa linha 
 | 4.4 | Ditar num navegador (campo de busca) | O texto entra no campo | ☐ | ☐ | ☐ |
 | 4.5 | Wayland sem `wtype`/`ydotool` | HUD mostra `Falha ao colar` por ~4 s; o clipboard original é restaurado | — | — | ☐ |
 | 4.6 | Com o histórico do clipboard ligado (Win+V no Windows; Klipper/KDE ou outro gerenciador no Linux), ditar uma frase e abrir o histórico | A frase ditada não aparece no histórico (nem na sincronização na nuvem do Windows); o texto colado entra normalmente no app | ☐ | ☐ | ☐ |
+| 4.7 | **Windows, colagem com clipboard ocupado:** copie um texto qualquer (ex.: "texto antigo"), dite uma frase com o `large-v3-turbo` num navegador e num editor (VS Code/Notepad) | Entra a frase **ditada**, nunca o "texto antigo"; ~400 ms depois o clipboard volta ao "texto antigo" (cole num campo para conferir). Se o clipboard estiver travado por outro app, o HUD mostra a falha de clipboard em vez de colar o texto antigo | ☐ | — | — |
 
 ## 5. HUD
 
@@ -176,7 +177,7 @@ detalhes estão em `docs/tecnologia.md` (**Segurança e privacidade**).
 | # | Risco | O que conferir | Aceito |
 | --- | --- | --- | --- |
 | 9.1 | **Sem assinatura de código:** o .exe, o .deb e o AppImage não são assinados; o SmartScreen avisa (1.1) e a integridade depende do canal por onde o arquivo chega | Compare o SHA-256 do arquivo recebido com o de `docs/tecnologia.md` | ☐ |
-| 9.2 | **Clipboard compartilhado por ~50 ms:** durante a colagem outro app que leia o clipboard vê o texto ditado; gerenciadores de clipboard que ignoram a dica de histórico podem guardá-lo (4.6) | Se usa um gerenciador de clipboard, veja se a frase ditada fica guardada nele | ☐ |
+| 9.2 | **Clipboard compartilhado por ~400 ms (Windows) / ~50 ms (Linux):** durante a colagem outro app que leia o clipboard vê o texto ditado; gerenciadores de clipboard que ignoram a dica de histórico podem guardá-lo (4.6) | Se usa um gerenciador de clipboard, veja se a frase ditada fica guardada nele | ☐ |
 | 9.3 | **`ORT_DYLIB_PATH`:** quem controla as variáveis de ambiente da sua conta pode fazer o app carregar outra biblioteca ONNX Runtime (a variável existe para desenvolvimento; caminho relativo é ignorado) | Nada a testar; risco pressupõe acesso à sua conta | ☐ |
 | 9.4 | **Instalação por usuário (Windows):** a pasta `%LOCALAPPDATA%\PointSpeak` é gravável pelo próprio usuário, como em todo app instalado por usuário; as DLLs do ONNX Runtime são carregadas dela | Confira em 8.1 que as DLLs estão nessa pasta | ☐ |
 | 9.5 | **CPU com AVX2 obrigatória:** em CPU sem AVX2/FMA o app fecha ao transcrever (o .exe e os pacotes Linux são compilados para AVX2) | Se tiver um PC antigo, anote o comportamento | ☐ |

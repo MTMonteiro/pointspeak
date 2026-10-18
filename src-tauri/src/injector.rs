@@ -1,7 +1,7 @@
 //! Injeção do texto transcrito no app em foco, sem perder o clipboard do usuário (spec §4.6).
 //!
 //! [`inject`] guarda o clipboard (arboard), põe o texto, cola e, depois de
-//! [`RESTORE_DELAY`](pointspeak_core::injector::RESTORE_DELAY), devolve o conteúdo anterior. A
+//! [`restore_delay`](pointspeak_core::injector::restore_delay) (400 ms no Windows, 50 ms no Linux), devolve o conteúdo anterior. A
 //! sequência e as regras (atalho, ordem dos métodos) são puras e ficam em
 //! `pointspeak_core::injector`; aqui fica só o que toca o sistema.
 //!
@@ -30,10 +30,11 @@ use enigo::{Direction, Enigo, Key, Keyboard, Settings};
 use pointspeak_core::events::ErrorKind;
 use pointspeak_core::hud_layout::DisplayServer;
 use pointspeak_core::injector::{
-    paste_keys_for, paste_preserving_clipboard, paste_strategy, wtype_args, ydotool_args,
-    ClipboardError, ClipboardImage, ClipboardLike, FocusedApp, PasteError, PasteKeys, PasteMethod,
-    PasteOutcome, RESTORE_DELAY,
+    paste_keys_for, paste_preserving_clipboard_retrying, paste_strategy, restore_delay,
+    set_text_attempts, wtype_args, ydotool_args, ClipboardError, ClipboardImage, ClipboardLike,
+    FocusedApp, PasteError, PasteKeys, PasteMethod, PasteOutcome, SET_RETRY_PAUSE,
 };
+use pointspeak_core::settings::TargetOs;
 use thiserror::Error;
 
 /// Falha ao colar. O clipboard original é restaurado quando o clipboard permite.
@@ -54,7 +55,7 @@ impl InjectError {
     }
 }
 
-/// Cola `text` no app em foco preservando o clipboard. Bloqueia até terminar (~50 ms mais o tempo
+/// Cola `text` no app em foco preservando o clipboard. Bloqueia até terminar (até ~400 ms mais o tempo
 /// das teclas): chame fora da thread principal e do runtime async. Texto vazio não cola nada.
 pub fn inject(text: &str, display: DisplayServer) -> Result<(), InjectError> {
     let (reply, result) = mpsc::channel();
@@ -123,11 +124,14 @@ impl Injector {
         };
         let keys = paste_keys_for(&focused_app(display));
         let enigo = &mut self.enigo;
-        let outcome = paste_preserving_clipboard(
+        let os = TargetOs::current();
+        let outcome = paste_preserving_clipboard_retrying(
             &mut ArboardClipboard(clipboard),
             text,
+            set_text_attempts(os),
+            || thread::sleep(SET_RETRY_PAUSE),
             || paste(enigo, display, keys),
-            || thread::sleep(RESTORE_DELAY),
+            || thread::sleep(restore_delay(os)),
         );
         match outcome {
             Ok(PasteOutcome::PastedNotRestored(err)) => {

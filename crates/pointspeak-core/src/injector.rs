@@ -7,10 +7,36 @@ use std::fmt;
 use std::time::Duration;
 
 use crate::hud_layout::DisplayServer;
+use crate::settings::TargetOs;
 
-/// Espera entre a colagem e a restauração do clipboard (spec §4.6): o app em foco precisa ler o
-/// texto antes de o clipboard voltar ao conteúdo do usuário.
+/// Espera entre a colagem e a restauração do clipboard no Linux (spec §4.6): o app em foco precisa
+/// ler o texto antes de o clipboard voltar ao conteúdo do usuário.
 pub const RESTORE_DELAY: Duration = Duration::from_millis(50);
+
+/// Espera equivalente no Windows: o SendInput é assíncrono e o app em foco (Electron, navegador,
+/// máquina ocupada com a inferência) lê o clipboard bem depois da tecla; com 50 ms ele lia o
+/// conteúdo já restaurado e colava o texto antigo do usuário.
+pub const RESTORE_DELAY_WINDOWS: Duration = Duration::from_millis(400);
+
+/// Espera entre a colagem e a restauração do clipboard no SO `os`.
+pub fn restore_delay(os: TargetOs) -> Duration {
+    match os {
+        TargetOs::Windows => RESTORE_DELAY_WINDOWS,
+        TargetOs::Linux | TargetOs::Other => RESTORE_DELAY,
+    }
+}
+
+/// Pausa entre as tentativas de pôr o texto no clipboard (Windows: outro processo pode ter o
+/// clipboard aberto).
+pub const SET_RETRY_PAUSE: Duration = Duration::from_millis(20);
+
+/// Quantas vezes tentar pôr o texto no clipboard e conferi-lo antes de desistir de colar.
+pub fn set_text_attempts(os: TargetOs) -> usize {
+    match os {
+        TargetOs::Windows => 5,
+        TargetOs::Linux | TargetOs::Other => 1,
+    }
+}
 
 /// Atalho que cola o clipboard no app em foco.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -234,12 +260,35 @@ impl<E: fmt::Display> fmt::Display for PasteError<E> {
 
 impl<E: fmt::Debug + fmt::Display> std::error::Error for PasteError<E> {}
 
-/// Sequência não destrutiva: guarda o clipboard, põe `text`, chama `paste`, espera (`wait`, no app
-/// [`RESTORE_DELAY`]) e restaura o conteúdo anterior. Se `paste` falhar, também tenta restaurar
-/// o conteúdo original antes de devolver o erro.
+/// Sequência não destrutiva com uma tentativa de pôr o texto (ver
+/// [`paste_preserving_clipboard_retrying`]).
 pub fn paste_preserving_clipboard<C, E>(
     clipboard: &mut C,
     text: &str,
+    paste: impl FnOnce() -> Result<(), E>,
+    wait: impl FnOnce(),
+) -> Result<PasteOutcome, PasteError<E>>
+where
+    C: ClipboardLike + ?Sized,
+{
+    paste_preserving_clipboard_retrying(clipboard, text, 1, || {}, paste, wait)
+}
+
+/// Texto lido de volta bate com o escrito (o Windows pode trocar `\n` por `\r\n`).
+fn same_text(read: &str, written: &str) -> bool {
+    read.replace("\r\n", "\n") == written.replace("\r\n", "\n")
+}
+
+/// Sequência não destrutiva: guarda o clipboard, põe `text` e **confere lendo de volta** (até
+/// `attempts` vezes, com `pause` entre elas), chama `paste`, espera (`wait`, no app o
+/// [`restore_delay`]) e restaura o conteúdo anterior. Se o clipboard não ficar com o texto, nada é
+/// colado (senão colaria o conteúdo antigo): o clipboard original é restaurado e vem
+/// [`PasteError::SetText`]. Se `paste` falhar, também tenta restaurar o conteúdo original.
+pub fn paste_preserving_clipboard_retrying<C, E>(
+    clipboard: &mut C,
+    text: &str,
+    attempts: usize,
+    mut pause: impl FnMut(),
     paste: impl FnOnce() -> Result<(), E>,
     wait: impl FnOnce(),
 ) -> Result<PasteOutcome, PasteError<E>>
@@ -250,7 +299,27 @@ where
         return Ok(PasteOutcome::NothingToPaste);
     }
     let backup = ClipboardBackup::take(clipboard);
-    clipboard.set_text(text).map_err(PasteError::SetText)?;
+    let mut last = ClipboardError("o clipboard não ficou com o texto".into());
+    let mut ready = false;
+    for attempt in 0..attempts.max(1) {
+        if attempt > 0 {
+            pause();
+        }
+        match clipboard.set_text(text) {
+            Ok(()) => match clipboard.get_text() {
+                Some(read) if same_text(&read, text) => {
+                    ready = true;
+                    break;
+                }
+                _ => last = ClipboardError("o clipboard não ficou com o texto".into()),
+            },
+            Err(e) => last = e,
+        }
+    }
+    if !ready {
+        let _ = backup.restore(clipboard);
+        return Err(PasteError::SetText(last));
+    }
     match paste() {
         Ok(()) => {
             wait();
@@ -392,8 +461,18 @@ mod tests {
     }
 
     #[test]
-    fn restore_delay_is_50ms() {
+    fn restore_delay_depends_on_the_platform() {
         assert_eq!(RESTORE_DELAY, Duration::from_millis(50));
+        assert_eq!(restore_delay(TargetOs::Linux), Duration::from_millis(50));
+        assert_eq!(restore_delay(TargetOs::Other), Duration::from_millis(50));
+        assert_eq!(restore_delay(TargetOs::Windows), Duration::from_millis(400));
+    }
+
+    #[test]
+    fn only_windows_retries_setting_the_text() {
+        assert_eq!(set_text_attempts(TargetOs::Windows), 5);
+        assert_eq!(set_text_attempts(TargetOs::Linux), 1);
+        assert_eq!(SET_RETRY_PAUSE, Duration::from_millis(20));
     }
 
     /// Clipboard em memória que registra as operações.
@@ -406,6 +485,8 @@ mod tests {
         /// Só a primeira escrita (o texto transcrito) funciona; a restauração falha.
         fail_restore: bool,
         writes: usize,
+        /// A escrita "funciona", mas a leitura segue devolvendo o conteúdo antigo.
+        stale_reads: usize,
     }
 
     impl FakeClipboard {
@@ -428,6 +509,10 @@ mod tests {
 
     impl ClipboardLike for FakeClipboard {
         fn get_text(&mut self) -> Option<String> {
+            if self.stale_reads > 0 {
+                self.stale_reads -= 1;
+                return Some("antigo".into());
+            }
             match &self.content {
                 ClipboardBackup::Text(t) => Some(t.clone()),
                 _ => None,
@@ -651,5 +736,49 @@ mod tests {
                 rgba: Vec::new()
             })
             .is_err());
+    }
+
+    #[test]
+    fn nothing_is_pasted_when_the_clipboard_keeps_the_old_text() {
+        let mut clipboard = FakeClipboard::with(ClipboardBackup::Text("do usuário".into()));
+        clipboard.stale_reads = usize::MAX;
+        let (mut pastes, mut pauses) = (0, 0);
+        let result = paste_preserving_clipboard_retrying(
+            &mut clipboard,
+            "ditado",
+            5,
+            || pauses += 1,
+            || {
+                pastes += 1;
+                Ok::<(), ()>(())
+            },
+            || panic!("sem colagem não há espera"),
+        );
+        assert!(matches!(result, Err(PasteError::SetText(_))));
+        assert_eq!((pastes, pauses), (0, 4));
+    }
+
+    #[test]
+    fn retries_until_the_clipboard_has_the_text() {
+        let mut clipboard = FakeClipboard::with(ClipboardBackup::Text("do usuário".into()));
+        // A primeira leitura é a do backup.
+        clipboard.stale_reads = 3;
+        let mut pauses = 0;
+        let result = paste_preserving_clipboard_retrying(
+            &mut clipboard,
+            "ditado",
+            5,
+            || pauses += 1,
+            || Ok::<(), ()>(()),
+            || {},
+        );
+        assert_eq!(result, Ok(PasteOutcome::Pasted));
+        assert_eq!(pauses, 2);
+    }
+
+    #[test]
+    fn crlf_from_the_readback_still_counts_as_the_same_text() {
+        assert!(same_text("a\r\nb", "a\nb"));
+        assert!(!same_text("a", "b"));
     }
 }
