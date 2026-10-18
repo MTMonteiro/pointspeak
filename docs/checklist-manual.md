@@ -10,13 +10,8 @@ Como rodar:
 - **Linux:** `npm run build && cargo build -p pointspeak --release` e rode `target/release/pointspeak`
   num terminal (os logs saem no stderr). No Wayland, instale `wtype` (ou `ydotool` com o `ydotoold` rodando).
 
-**Antes da fase Telas** a janela de Configurações ainda é um placeholder. Para os itens que dependem dela:
-- Modelo: baixe `ggml-tiny.bin`/`ggml-base.bin` de `https://huggingface.co/ggerganov/whisper.cpp/resolve/main/`
-  para a pasta dos modelos (`%APPDATA%\com.pointspeak.app\models` / `~/.local/share/com.pointspeak.app/models`).
-- Config: com o app **fechado**, edite `config.json` (`%APPDATA%\com.pointspeak.app\` /
-  `~/.config/com.pointspeak.app/`), ex.: `{ "model": "base", "hotkey": "Alt+Z", "hotkeyMode": "toggle" }`, e abra
-  o app de novo. A troca de atalho com conflito (6.5) só dá para validar quando a tela de Atalho existir; até lá,
-  um atalho em conflito no `config.json` aparece no stderr ao abrir o app.
+As configurações de Microfone, Modelos, Hardware, Idioma e Atalho ficam na janela de Configurações. Confira os
+fluxos interativos da seção 7; os passos abaixo também validam o download real e a troca do modelo ativo.
 
 ## 1. Instalação e início
 
@@ -87,3 +82,16 @@ Abra um editor de texto (Bloco de Notas / gedit / Kate) com o cursor numa linha 
 | 6.5 | Trocar para um atalho já usado (ex.: um atalho global de outro app aberto) | Aviso `<atalho> já é usado por outro app ou pelo sistema. Escolha outra combinação.`; o atalho anterior continua valendo | ☐ | ☐ | ☐ |
 | 6.6 | Wayland: o atalho global funciona? | Anote: muitos compositores não deixam (limitação conhecida) | — | — | ☐ |
 | 6.7 | `Sair` | O app fecha e o ícone some | ☐ | ☐ | ☐ |
+
+## 7. Configurações
+
+| # | Passo | Esperado | Win | X11 | Wayland |
+| --- | --- | --- | --- | --- | --- |
+| 7.1 | Configurações → Modelos → baixe um modelo real (ex.: `tiny`) | Progresso em bytes, verificação de integridade e estado `Pronto`; espaço usado atualizado | ☐ | ☐ | ☐ |
+| 7.2 | Baixe outro modelo e escolha `Usar este`; depois selecione o anterior | O selo `Ativo` acompanha a troca e o estado do motor/bandeja reflete o modelo escolhido | ☐ | ☐ | ☐ |
+| 7.3 | Tente remover o modelo ativo e depois um modelo pronto | A remoção do ativo fica desabilitada com o motivo; o outro pede confirmação antes de apagar | ☐ | ☐ | ☐ |
+| 7.4 | Configurações → Hardware; selecione CPU ou um backend disponível e feche/reabra | A seleção fica salva; cartões indisponíveis mostram o motivo; `auto` marca o backend efetivo | ☐ | ☐ | ☐ |
+| 7.5 | Configurações → Atalho → `Alterar`; pressione `Ctrl+Shift+Space` | A combinação capturada aparece e passa a acionar o ditado | ☐ | ☐ | ☐ |
+| 7.6 | Configurações → Microfone → `Testar microfone`; fale e depois pare | Medidor responde à voz; o teste não grava áudio e encerra ao sair da seção | ☐ | ☐ | ☐ |
+| 7.7 | Ative o tema escuro do sistema e abra cada seção de Configurações | Texto, estados de erro/aviso, rádios, barras e botões seguem legíveis | ☐ | ☐ | ☐ |
+| 7.8 | Reduza a janela de Configurações para 360 × 480 px e percorra as seções | Navegação, caminho longo da pasta e cartões cabem sem rolagem horizontal | ☐ | ☐ | ☐ |
