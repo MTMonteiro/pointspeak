@@ -1,20 +1,44 @@
-# Checklist manual: PointSpeak
+# Checklist manual: PointSpeak 1.0.0
 
-Roteiro para o dono validar o que os checks automáticos não alcançam (tela, microfone, atalho global,
-clipboard real). Marque cada item em cada plataforma: **Win** (instalador .exe), **X11** e **Wayland**
-(Linux). Anote o que falhar com o texto do erro e, se possível, a saída do terminal (`[pointspeak] …`).
+Roteiro de aceite da versão **1.0.0**: o que o dono confere à mão, porque os checks automáticos não alcançam
+tela, microfone, atalho global, clipboard real nem hardware (GPU/NPU). Marque cada item em cada plataforma:
+**Win** (instalador .exe), **X11** e **Wayland** (Linux, pelo .deb ou AppImage). `—` = não se aplica. Anote o
+que falhar com o texto do erro e, se possível, a saída do terminal (`[pointspeak] …`).
 
-Como rodar:
-- **Windows:** gere o instalador no Linux com `./scripts/build-windows.sh` e copie
-  `target/x86_64-pc-windows-msvc/release/bundle/nsis/PointSpeak_<versão>_x64-setup.exe`.
-- **Linux (pacote):** gere com `./scripts/build-linux.sh` e instale o .deb
-  (`sudo apt install ./target/release/bundle/deb/PointSpeak_<versão>_amd64.deb`) ou rode o AppImage
-  (`chmod +x PointSpeak_<versão>_amd64.AppImage`). Abra `pointspeak` num terminal para ver os logs (stderr).
-- **Linux (dev):** `npm run build && cargo build -p pointspeak --release` e rode `target/release/pointspeak`
-  num terminal (os logs saem no stderr). No Wayland, instale `wtype` (ou `ydotool` com o `ydotoold` rodando).
+## Entrega 1.0.0
 
-As configurações de Microfone, Modelos, Hardware, Idioma e Atalho ficam na janela de Configurações. Confira os
-fluxos interativos da seção 7; os passos abaixo também validam o download real e a troca do modelo ativo.
+Os arquivos, tamanhos e SHA-256 estão em `docs/tecnologia.md` (**Instaladores 1.0.0**). Antes de instalar,
+confira o hash do arquivo copiado: `sha256sum <arquivo>` no Linux, `Get-FileHash <arquivo>` no PowerShell.
+
+- **Windows:** `target/x86_64-pc-windows-msvc/release/bundle/nsis/PointSpeak_1.0.0_x64-setup.exe`
+  (gerado por `./scripts/build-windows.sh`).
+- **Linux:** `target/release/bundle/deb/PointSpeak_1.0.0_amd64.deb` (`sudo apt install ./PointSpeak_1.0.0_amd64.deb`)
+  e `target/release/bundle/appimage/PointSpeak_1.0.0_amd64.AppImage` (`chmod +x` e rodar), gerados por
+  `./scripts/build-linux.sh`. Abra `pointspeak` num terminal para ver os logs (stderr).
+- **Logs no Windows:** o `pointspeak.exe` de release é um app gráfico (sem console), então rodá-lo direto no
+  PowerShell não mostra o stderr. Para os itens que pedem a saída do terminal (8.7, 8.14, 8.16…), feche o app
+  pela bandeja e abra com o stderr num arquivo:
+  `Start-Process "$env:LOCALAPPDATA\PointSpeak\pointspeak.exe" -RedirectStandardError "$env:TEMP\pointspeak.log"`;
+  depois leia com `Get-Content "$env:TEMP\pointspeak.log" -Wait`.
+- **Linux (dev, opcional):** `npm run build && cargo build -p pointspeak --release` e rode
+  `target/release/pointspeak` num terminal. No Wayland, instale `wtype` (ou `ydotool` com o `ydotoold` rodando).
+
+## Ordem de execução
+
+Faça uma plataforma por vez (sugestão: Windows, depois Linux X11, depois Linux Wayland), nesta ordem:
+
+1. **Instalação e início** (seção 1; no Linux, também 8.6a/8.6b/8.6c do pacote).
+2. **Modelos** (seção 2) com o backend `CPU` ou `Automático`: deixe um modelo ggml ativo (`base`).
+3. **Ditado, colagem e HUD** (seções 3, 4 e 5).
+4. **Bandeja, atalho e Configurações** (seções 6 e 7).
+5. **ONNX Runtime e Silero VAD** (seção 8: 8.1 a 8.10). Deixe por último os passos que renomeiam ou
+   corrompem arquivos (8.3, 8.4, 8.10) e desfaça cada um antes de seguir.
+6. **Windows: DirectML** (seção 8.A, 8.12 a 8.19), num PC com GPU/NPU DirectX 12.
+7. **Riscos aceitos** (seção 9): leia e marque se concorda com cada um.
+8. Itens `(Dev, opcional)` (8.11, 8.20) só se for desenvolver o projeto.
+
+Aceite da 1.0.0: todos os itens das seções 1 a 7 e 8.1–8.10 passam nas plataformas marcadas, 8.A passa no
+Windows com DirectML (ou fica anotado que não há hardware para testar) e a seção 9 está conferida.
 
 ## 1. Instalação e início
 
@@ -128,8 +152,8 @@ a CPU).
 
 ### 8.A DirectML no Windows (engine Whisper ONNX)
 
-Num PC com GPU ou NPU DirectX 12 (8.2 com `NPU (DirectML)` disponível) e o app aberto num terminal (`pointspeak.exe`
-pelo PowerShell, para ver o stderr). O DirectML usa o dispositivo mais rápido que o Windows indicar (GPU ou NPU).
+Num PC com GPU ou NPU DirectX 12 (8.2 com `NPU (DirectML)` disponível) e o app aberto com o stderr num arquivo (`Start-Process … -RedirectStandardError`, veja
+**Logs no Windows** no começo). O DirectML usa o dispositivo mais rápido que o Windows indicar (GPU ou NPU).
 
 | # | Passo | Esperado | Win | X11 | Wayland |
 | --- | --- | --- | --- | --- | --- |
@@ -142,3 +166,19 @@ pelo PowerShell, para ver o stderr). O DirectML usa o dispositivo mais rápido q
 | 8.18 | Troque o backend para `CPU` | A lista de Modelos volta à variante ggml sozinha; o próximo ditado carrega o whisper.cpp (`transcrição: whisper.cpp em CPU`), sem aviso de fallback | ☐ | — | — |
 | 8.19 | Com a variante ONNX do modelo ativo ausente (8.16), baixe-a com o DirectML escolhido | Ao terminar, a bandeja passa por `Carregando modelo…` e o próximo ditado sai no DirectML (o fallback some) | ☐ | — | — |
 | 8.20 | (Dev, opcional) Linux, engine ONNX na CPU EP: `./scripts/fetch-onnxruntime.sh linux`, baixe a pasta `onnx-tiny` (URLs no `ONNX_CATALOG`) e rode `ORT_DYLIB_PATH=$PWD/target/onnxruntime/linux-x64/libonnxruntime.so cargo run -p pointspeak --release --example transcribe -- --backend cpu <pasta onnx-tiny> jfk.wav en` | Mesmo texto do whisper.cpp (`… ggml-tiny.bin jfk.wav en`); `--backend directml` no Linux sai com `DirectML is not supported in this build of ONNX Runtime` | — | ☐ | — |
+
+## 9. Riscos aceitos (revisão de segurança, task #807)
+
+Comportamentos conhecidos que a 1.0.0 entrega assim de propósito. Confira cada um e marque se aceita; os
+detalhes estão em `docs/tecnologia.md` (**Segurança e privacidade**).
+
+| # | Risco | O que conferir | Aceito |
+| --- | --- | --- | --- |
+| 9.1 | **Sem assinatura de código:** o .exe, o .deb e o AppImage não são assinados; o SmartScreen avisa (1.1) e a integridade depende do canal por onde o arquivo chega | Compare o SHA-256 do arquivo recebido com o de `docs/tecnologia.md` | ☐ |
+| 9.2 | **Clipboard compartilhado por ~50 ms:** durante a colagem outro app que leia o clipboard vê o texto ditado; gerenciadores de clipboard que ignoram a dica de histórico podem guardá-lo (4.6) | Se usa um gerenciador de clipboard, veja se a frase ditada fica guardada nele | ☐ |
+| 9.3 | **`ORT_DYLIB_PATH`:** quem controla as variáveis de ambiente da sua conta pode fazer o app carregar outra biblioteca ONNX Runtime (a variável existe para desenvolvimento; caminho relativo é ignorado) | Nada a testar; risco pressupõe acesso à sua conta | ☐ |
+| 9.4 | **Instalação por usuário (Windows):** a pasta `%LOCALAPPDATA%\PointSpeak` é gravável pelo próprio usuário, como em todo app instalado por usuário; as DLLs do ONNX Runtime são carregadas dela | Confira em 8.1 que as DLLs estão nessa pasta | ☐ |
+| 9.5 | **CPU com AVX2 obrigatória:** em CPU sem AVX2/FMA o app fecha ao transcrever (o .exe e os pacotes Linux são compilados para AVX2) | Se tiver um PC antigo, anote o comportamento | ☐ |
+| 9.6 | **Wayland:** o HUD fica fixo no centro-inferior (5.3), o atalho global depende do compositor (6.6) e a colagem depende de `wtype`/`ydotool` (4.5) | Itens 4.5, 5.3 e 6.6 | ☐ |
+| 9.7 | **Pasta de logs vazia:** os logs `[pointspeak] …` saem só no terminal (stderr); `Sobre → Abrir pasta de logs` abre a pasta, mas o app ainda não grava arquivo de log | Abra o app por um terminal (Windows: **Logs no Windows**, no começo) quando precisar do motivo de um erro | ☐ |
+| 9.8 | **Callback de áudio aloca memória** por bloco (conversão de formato): não bloqueia a captura, mas não é livre de alocação | Nada a testar; só desempenho em máquina muito carregada | ☐ |

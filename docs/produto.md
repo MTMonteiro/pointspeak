@@ -72,13 +72,17 @@ Resumo e fases do plano da Fábrica: a primeira task de cada mudança de plano a
 **Resumo:** PointSpeak é um utilitário desktop (Windows/Linux) em Tauri v2 que fica na bandeja do sistema e faz ditado por voz 100% local: um atalho global grava o microfone, um HUD em pílula segue o cursor mostrando gravando/transcrevendo/ok, o Whisper (whisper-rs na CPU ou ONNX Runtime com NPU/DirectML) transcreve em PT/EN e o texto é colado no app em foco, preservando o clipboard. Uma janela de configurações gerencia microfone, modelos, hardware, idioma e atalho. O Windows é entregue como instalador .exe (NSIS) gerado por compilação cruzada no runner Linux.
 
 ### Fases
-1. **Fundação do projeto e checks** (atual): scaffold Tauri v2 compilando no Linux, workspace Cargo com crate núcleo testável, checks passando e build cruzado do .exe Windows provado com o esqueleto.
-2. Design.
-3. Núcleo: áudio, estado e Whisper.
-4. Integração com o SO (atalho, HUD no cursor, injeção de texto).
-5. Telas.
-6. Aceleração NPU/GPU (ort).
-7. Qualidade e empacotamento.
+Todas concluídas na versão **1.0.0** (task #808). Entre parênteses, as tasks de cada fase.
+
+1. **Fundação do projeto e checks** ✅ (#753, #754): scaffold Tauri v2, workspace Cargo com o núcleo `pointspeak-core`, setup Linux, os 7 checks e o build cruzado do .exe provado com o esqueleto.
+2. **Design** ✅ (#758): `docs/design/` com tokens, HUD, Configurações e protótipos.
+3. **Núcleo: áudio, estado e Whisper** ✅ (#762, #763, #764, #765): estado/config/contrato de eventos e PTT/Toggle, pipeline de áudio em memória, Model Manager com SHA-256 e engine whisper-rs.
+4. **Integração com o SO** ✅ (#772, #773, #774): HUD que segue o cursor (Win32/X11; fixo no Wayland), injector não destrutivo e orquestração (bandeja, atalho, pipeline ponta a ponta).
+5. **Telas** ✅ (#780, #781, #782, #783): HUD animado e janela de Configurações (Microfone, Modelos, Hardware, Idioma, Atalho, Sobre).
+6. **Aceleração NPU/GPU (ort)** ✅ (#791, #792, #793, #794, #795): ONNX Runtime em tempo de execução, Silero VAD, engine Whisper ONNX (DirectML/OpenVINO/CUDA) com fallback para a CPU e o motivo real na tela.
+7. **Qualidade e empacotamento** ✅ (#805, #806, #807, #808): testes de integração e contrato Rust↔TS, pacotes Linux (.deb/AppImage), revisão de segurança/privacidade/desempenho e a entrega 1.0.0 (instaladores, README de usuário e `docs/checklist-manual.md` como roteiro de aceite).
+
+Próximo passo: o dono roda o `docs/checklist-manual.md` nos instaladores 1.0.0 (tamanhos e SHA-256 em `docs/tecnologia.md`).
 
 ### Decisões
 - As libs de sistema do Tauri/cpal/whisper.cpp são instaladas no runner por `scripts/setup-linux.sh`.
