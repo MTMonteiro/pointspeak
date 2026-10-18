@@ -1,18 +1,24 @@
-//! Backend do PointSpeak: janelas, bandeja e atalho global.
-//! A lógica pura (estado do HUD etc.) fica no crate `pointspeak-core`.
+//! Backend do PointSpeak: janelas, bandeja, atalho global e o ditado ponta a ponta.
+//! A lógica pura (máquinas do ditado e do HUD etc.) fica no crate `pointspeak-core`.
 
 use std::sync::Mutex;
+use std::time::Instant;
 
 use pointspeak_core::config::AppConfig;
-use pointspeak_core::hud::HudMachine;
+use pointspeak_core::dictation::Input;
+use pointspeak_core::hotkey::KeyAction;
+use pointspeak_core::hud::HudState;
 use pointspeak_core::transcriber::EngineSlot;
 use tauri::{Manager, WindowEvent};
+use tauri_plugin_global_shortcut::ShortcutState;
 
 pub mod audio;
 mod config;
+pub mod dictation;
 pub mod hud;
 pub mod injector;
 pub mod models;
+pub mod shortcut;
 pub mod transcriber;
 mod tray;
 
@@ -23,19 +29,33 @@ pub const HUD_WINDOW: &str = "hud";
 /// Estado compartilhado do app.
 #[derive(Default)]
 pub struct AppState {
-    pub hud: Mutex<HudMachine>,
+    /// Espelho do estado do HUD (o dono é a máquina do ditado, em `dictation.rs`).
+    pub hud: Mutex<HudState>,
     /// Configuração atual; carregada do `config.json` no `setup`.
     pub config: Mutex<AppConfig>,
-    /// Engine de transcrição carregada (lazy: no primeiro ditado, via `transcriber::ensure_loaded`).
+    /// Engine de transcrição carregada (no `setup`, em segundo plano, ou no primeiro ditado).
     pub transcriber: Mutex<EngineSlot>,
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
-        // Plugin registrado sem atalho: o atalho entra na fase de integração com o SO.
-        .plugin(tauri_plugin_global_shortcut::Builder::new().build())
+        // O atalho do config é registrado no `setup` (e trocado no `set_config`); só ele existe.
+        .plugin(
+            tauri_plugin_global_shortcut::Builder::new()
+                .with_handler(|app, _shortcut, event| {
+                    let action = match event.state {
+                        ShortcutState::Pressed => KeyAction::Pressed,
+                        ShortcutState::Released => KeyAction::Released,
+                    };
+                    if let Some(dictation) = app.try_state::<dictation::DictationHandle>() {
+                        dictation.send(Input::Hotkey(action, Instant::now()));
+                    }
+                })
+                .build(),
+        )
         .manage(AppState::default())
+        .manage(shortcut::HotkeyBinding::default())
         .manage(models::ModelManager::default())
         .invoke_handler(tauri::generate_handler![
             audio::list_microphones,
@@ -49,11 +69,33 @@ pub fn run() {
             transcriber::load_transcriber
         ])
         .setup(|app| {
-            config::init(app.handle())?;
-            // HUD sem atalho ainda: a orquestração (atalho → gravar → HUD) vem na etapa seguinte.
-            app.manage(hud::HudController::new(app.handle().clone()));
-            models::init(app.handle())?;
-            tray::build(app.handle())?;
+            let handle = app.handle();
+            config::init(handle)?;
+            let hud = hud::HudController::new(handle.clone());
+            let display = hud.display_server();
+            app.manage(hud);
+            models::init(handle)?;
+            app.manage(tray::build(handle)?);
+
+            let config = app.state::<AppState>().config.lock().unwrap().clone();
+            let backend = dictation::TauriBackend::new(handle.clone(), display);
+            app.manage(dictation::spawn(
+                dictation::machine_from_config(&config),
+                backend,
+            ));
+            match shortcut::parse(&config.hotkey) {
+                Ok(s) => {
+                    let label = dictation::hotkey_label(&config.hotkey);
+                    if let Err(e) = app
+                        .state::<shortcut::HotkeyBinding>()
+                        .rebind(handle, s, &label)
+                    {
+                        eprintln!("[pointspeak] {e}");
+                    }
+                }
+                Err(e) => eprintln!("[pointspeak] atalho inválido: {e}"),
+            }
+            dictation::reload_model(handle);
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -72,13 +114,11 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use pointspeak_core::hud::HudState;
 
     #[test]
     fn app_state_starts_with_hidden_hud() {
         let state = AppState::default();
-        let hud = state.hud.lock().unwrap();
-        assert_eq!(hud.state(), HudState::Idle);
+        assert_eq!(*state.hud.lock().unwrap(), HudState::Idle);
         assert_eq!(*state.config.lock().unwrap(), AppConfig::default());
         assert!(state.transcriber.lock().unwrap().loaded_model().is_none());
     }

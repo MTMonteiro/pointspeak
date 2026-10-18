@@ -7,7 +7,7 @@
 //! - **processamento**: roda o [`CapturePipeline`] do núcleo (downmix, resample 16 kHz, RMS,
 //!   silêncio, limite de duração) e chama `on_level`/`on_auto_stop`.
 //!
-//! A orquestração (eventos do HUD, atalho) é da fase de integração com o SO.
+//! A orquestração (eventos do HUD, atalho) fica em `dictation.rs`.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender, SyncSender};
@@ -16,8 +16,11 @@ use std::thread::{self, JoinHandle};
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{FromSample, SampleFormat, SizedSample};
-use pointspeak_core::audio::{CapturePipeline, CaptureSettings, MicrophoneInfo, PipelineError};
+use pointspeak_core::audio::{
+    CapturePipeline, CaptureSettings, MicrophoneInfo, PipelineError, StopReason,
+};
 use pointspeak_core::config::AppConfig;
+use pointspeak_core::dictation::RecordedAudio;
 use pointspeak_core::events::ErrorKind;
 use serde::{Serialize, Serializer};
 use thiserror::Error;
@@ -131,13 +134,13 @@ impl AudioRecorder {
     /// Abre o microfone (`None` = padrão do sistema) e começa a gravar.
     ///
     /// `on_level` recebe o nível 0..=1 a cada 30 ms. `on_auto_stop` é chamado uma vez quando a
-    /// gravação deve parar sozinha (silêncio, duração máxima ou microfone desconectado); quem
-    /// orquestra chama [`RecordingHandle::stop`] em seguida.
+    /// gravação deve parar sozinha, com o motivo (silêncio, duração máxima) ou `None` se o microfone
+    /// foi desconectado; quem orquestra chama [`RecordingHandle::stop`] em seguida.
     pub fn start(
         &self,
         device: Option<&str>,
         on_level: impl Fn(f32) + Send + 'static,
-        on_auto_stop: impl Fn() + Send + 'static,
+        on_auto_stop: impl Fn(Option<StopReason>) + Send + 'static,
     ) -> Result<RecordingHandle, AudioError> {
         let device_name = device.map(str::to_string);
         let (sample_tx, sample_rx) = mpsc::sync_channel::<Captured>(CHANNEL_BLOCKS);
@@ -203,7 +206,7 @@ impl AudioRecorder {
 pub struct RecordingHandle {
     stop_tx: Sender<()>,
     capture: JoinHandle<()>,
-    processing: JoinHandle<Vec<f32>>,
+    processing: JoinHandle<RecordedAudio>,
     device_lost: Arc<AtomicBool>,
 }
 
@@ -213,8 +216,8 @@ impl RecordingHandle {
         self.device_lost.load(Ordering::SeqCst)
     }
 
-    /// Fecha o microfone e devolve o áudio gravado: 16 kHz, mono, f32.
-    pub fn stop(self) -> Vec<f32> {
+    /// Fecha o microfone e devolve o áudio gravado (16 kHz, mono, f32) e se houve fala.
+    pub fn stop(self) -> RecordedAudio {
         let _ = self.stop_tx.send(());
         let _ = self.capture.join();
         self.processing.join().unwrap_or_default()
@@ -295,24 +298,28 @@ fn process_thread(
     sample_rx: Receiver<Captured>,
     device_lost: Arc<AtomicBool>,
     on_level: impl Fn(f32),
-    on_auto_stop: impl Fn(),
-) -> Vec<f32> {
+    on_auto_stop: impl Fn(Option<StopReason>),
+) -> RecordedAudio {
     let mut notified = false;
     // Termina quando o stream é solto (os dois callbacks largam o lado de envio).
     for message in sample_rx {
         let stop = match message {
-            Captured::Samples(block) => pipeline.push(&block, &on_level).is_some(),
+            Captured::Samples(block) => pipeline.push(&block, &on_level).map(Some),
             Captured::DeviceLost => {
                 device_lost.store(true, Ordering::SeqCst);
-                true
+                Some(None)
             }
         };
-        if stop && !notified {
+        if let (Some(reason), false) = (stop, notified) {
             notified = true;
-            on_auto_stop();
+            on_auto_stop(reason);
         }
     }
-    pipeline.finish()
+    let heard_speech = pipeline.heard_speech();
+    RecordedAudio {
+        samples: pipeline.finish(),
+        heard_speech,
+    }
 }
 
 #[cfg(test)]
@@ -395,7 +402,8 @@ mod tests {
                     move |_| {
                         l.fetch_add(1, Ordering::SeqCst);
                     },
-                    move || {
+                    move |reason| {
+                        assert_eq!(reason, Some(StopReason::MaxDuration));
                         s.fetch_add(1, Ordering::SeqCst);
                     },
                 )
@@ -407,7 +415,9 @@ mod tests {
         tx.send(Captured::DeviceLost).unwrap();
         drop(tx);
         let audio = worker.join().unwrap();
-        assert_eq!(audio.len(), 16_000);
+        assert_eq!(audio.samples.len(), 16_000);
+        // Só "fala" constante a -20 dBFS: o detector de silêncio (ligado por padrão) ouviu voz.
+        assert_eq!(audio.heard_speech, Some(true));
         assert_eq!(stops.load(Ordering::SeqCst), 1);
         assert_eq!(levels.load(Ordering::SeqCst), 24_000 / 480);
         assert!(lost.load(Ordering::SeqCst));

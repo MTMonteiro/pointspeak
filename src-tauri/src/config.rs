@@ -7,8 +7,11 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
 use pointspeak_core::config::AppConfig;
+use pointspeak_core::dictation::Input;
 use tauri::{AppHandle, Manager, Runtime, State};
 
+use crate::dictation::{self, DictationHandle};
+use crate::shortcut::{self, HotkeyBinding};
 use crate::AppState;
 
 pub const CONFIG_FILE: &str = "config.json";
@@ -83,23 +86,47 @@ pub fn get_config(state: State<'_, AppState>) -> Result<AppConfig, String> {
         .map_err(|_| "Configurações indisponíveis no momento.".to_string())
 }
 
-/// Valida, grava e só então troca a configuração em memória. Erros saem em PT-BR para a interface.
+/// Valida, troca o atalho global se ele mudou, grava e só então troca a configuração em memória.
+/// Erros saem em PT-BR para a interface; atalho recusado pelo SO mantém o anterior.
+///
+/// Síncrono de propósito: roda na thread principal, onde o `HotkeyBinding` precisa ser usado.
 #[tauri::command]
 pub fn set_config(
     app: AppHandle,
     state: State<'_, AppState>,
+    binding: State<'_, HotkeyBinding>,
     config: AppConfig,
 ) -> Result<AppConfig, String> {
     config.validate().map_err(|e| e.to_string())?;
+    let shortcut = shortcut::parse(&config.hotkey)?;
+    let label = dictation::hotkey_label(&config.hotkey);
     let path =
         config_path(&app).map_err(|e| format!("Pasta de configurações não encontrada: {e}"))?;
     let mut current = state
         .config
         .lock()
         .map_err(|_| "Configurações indisponíveis no momento.".to_string())?;
-    save_to(&path, &config)
-        .map_err(|e| format!("Não foi possível salvar as configurações: {e}"))?;
+    let previous = shortcut::parse(&current.hotkey).ok();
+    let hotkey_changed = previous != Some(shortcut);
+    if hotkey_changed {
+        binding.rebind(&app, shortcut, &label)?;
+    }
+    if let Err(e) = save_to(&path, &config) {
+        if let (true, Some(old)) = (hotkey_changed, previous) {
+            let _ = binding.rebind(&app, old, &dictation::hotkey_label(&current.hotkey));
+        }
+        return Err(format!("Não foi possível salvar as configurações: {e}"));
+    }
+    let model_changed = current.model != config.model;
     *current = config.clone();
+    drop(current);
+    app.state::<DictationHandle>().send(Input::ConfigChanged {
+        hotkey: label,
+        mode: config.hotkey_mode,
+    });
+    if model_changed {
+        dictation::reload_model(&app);
+    }
     Ok(config)
 }
 
