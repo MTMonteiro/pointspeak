@@ -98,15 +98,19 @@ Abra um editor de texto (Bloco de Notas / gedit / Kate) com o cursor numa linha 
 
 ## 8. Aceleração: ONNX Runtime e hardware
 
-O ONNX Runtime é carregado e roda o Silero VAD da parada por silêncio (ainda não transcreve: o núcleo puro da engine Whisper ONNX já existe, mas a engine no app chega na próxima etapa; a lista de modelos continua só com os `.bin` ggml). Os avisos saem no
-terminal como `[pointspeak] ONNX Runtime …`.
+O ONNX Runtime é carregado, roda o Silero VAD da parada por silêncio e, desde a task #794, a transcrição
+nos backends DirectML, OpenVINO e CUDA (engine Whisper ONNX; CPU e Vulkan seguem no whisper.cpp). Com um
+desses backends a seção Modelos mostra a variante ONNX de cada modelo (pasta `onnx-<id>` com 4 arquivos,
+baixada à parte do `.bin`). Os avisos saem no terminal como `[pointspeak] ONNX Runtime …`, e cada carga de
+modelo imprime `[pointspeak] transcrição: <engine> em <backend>` (com `(fallback: <motivo>)` quando cai para
+a CPU).
 
 | # | Passo | Esperado | Win | X11 | Wayland |
 | --- | --- | --- | --- | --- | --- |
 | 8.1 | Abra a pasta de instalação (`%LOCALAPPDATA%\PointSpeak` ou a escolhida no instalador) | `onnxruntime.dll` e `DirectML.dll` ao lado do `pointspeak.exe`; licenças em `licenses\` | ☐ | — | — |
 | 8.2 | Configurações → Hardware num PC com GPU/NPU DirectX 12 | `NPU (DirectML)` disponível (detalhe com o fabricante, quando o Windows informa); OpenVINO `Nenhum dispositivo Intel compatível`, CUDA `Nenhuma GPU NVIDIA encontrada`, Vulkan `Não incluído nesta versão`, CPU `Sempre disponível` | ☐ | — | — |
 | 8.3 | Feche o app, renomeie o `onnxruntime.dll` da pasta de instalação e abra de novo | O app abre normalmente; DirectML, OpenVINO e CUDA com `ONNX Runtime não encontrado`; ditado segue na CPU. Desfaça a troca de nome depois | ☐ | — | — |
-| 8.4 | Selecione `NPU (DirectML)` e dite algo | O ditado funciona na CPU e a seção mostra o aviso de fallback para a CPU (esperado até a engine ONNX) | ☐ | — | — |
+| 8.4 | Selecione `NPU (DirectML)` com o `onnxruntime.dll` renomeado (8.3) e dite algo | Cartão DirectML indisponível; o ditado funciona na CPU (whisper.cpp) | ☐ | — | — |
 | 8.5 | Linux sem ONNX Runtime: abra Configurações → Hardware | DirectML `Disponível só no Windows`; OpenVINO e CUDA `ONNX Runtime não encontrado`; Vulkan `Não incluído nesta versão` | — | ☐ | ☐ |
 | 8.6 | Linux: `./scripts/fetch-onnxruntime.sh linux` e rode com `ORT_DYLIB_PATH=$PWD/target/onnxruntime/linux-x64/libonnxruntime.so target/release/pointspeak` | OpenVINO `Nenhum dispositivo Intel compatível` e CUDA `Nenhuma GPU NVIDIA encontrada` (o pacote oficial só traz a CPU); sem erro de carregamento no terminal | — | ☐ | ☐ |
 | 8.7 | **Silero VAD:** abra o app num terminal e confira a saída | `[pointspeak] Silero VAD carregado de …\resources\silero_vad.onnx` (Linux: com o `ORT_DYLIB_PATH` do 8.6); no Windows o arquivo fica em `resources\` na pasta de instalação e a licença em `licenses\silero_vad-LICENSE.txt` | ☐ | ☐ | ☐ |
@@ -114,3 +118,20 @@ terminal como `[pointspeak] ONNX Runtime …`.
 | 8.9 | Com o VAD ativo: Toggle num ambiente com ruído contínuo (ventilador, música baixa sem voz) e não fale; pare com o atalho | HUD mostra `Nada foi ouvido` (o ruído não conta como fala); as barras do HUD continuam reagindo ao ruído | ☐ | ☐ | ☐ |
 | 8.10 | Sem ONNX Runtime (passo 8.3 no Windows; Linux sem `ORT_DYLIB_PATH`): repita o 3.6 | Para sozinho pelo RMS como antes, sem erro no HUD; no terminal `[pointspeak] VAD: ONNX Runtime indisponível; parada por silêncio pelo RMS` | ☐ | ☐ | ☐ |
 | 8.11 | (Dev, opcional) Vocabulário real do Whisper ONNX: baixe `vocab.json` e `added_tokens.json` de `onnx-community/whisper-tiny` e de `onnx-community/whisper-large-v3-turbo` (URLs no `ONNX_CATALOG`) e rode `WHISPER_VOCAB_DIR=<pasta> cargo test -p pointspeak-core real_vocab -- --ignored --nocapture` para cada um | Passa nos dois; imprime `pt=50267` com 99 idiomas (tiny) e 100 (large-v3-turbo) | — | ☐ | — |
+
+### 8.A DirectML no Windows (engine Whisper ONNX)
+
+Num PC com GPU ou NPU DirectX 12 (8.2 com `NPU (DirectML)` disponível) e o app aberto num terminal (`pointspeak.exe`
+pelo PowerShell, para ver o stderr). O DirectML usa o dispositivo mais rápido que o Windows indicar (GPU ou NPU).
+
+| # | Passo | Esperado | Win | X11 | Wayland |
+| --- | --- | --- | --- | --- | --- |
+| 8.12 | Hardware → `NPU (DirectML)` (ou `Automático`, que escolhe o DirectML primeiro) e abra Modelos | A lista mostra a variante ONNX: modelos com só o `.bin` aparecem como `Baixar`; tamanhos iguais aos do ggml | ☐ | — | — |
+| 8.13 | Baixe o `base` e clique em `Usar este` | Progresso único até `Pronto` (soma dos 4 arquivos); pasta `models\onnx-base\` com `encoder_model_fp16.onnx`, `decoder_model_merged_fp16.onnx`, `vocab.json`, `added_tokens.json` | ☐ | — | — |
+| 8.14 | Dite uma frase em PT e outra em EN | Texto colado; terminal `[pointspeak] transcrição: ONNX Runtime em DirectML`; rodapé `Pronto · base · DirectML`; sem aviso de fallback na seção Hardware | ☐ | — | — |
+| 8.15 | Gerenciador de Tarefas → Desempenho durante um ditado longo (~20 s) | Uso da GPU (ou NPU) sobe na transcrição; anote o tempo entre soltar o atalho e colar, comparado com a CPU (8.18) | ☐ | — | — |
+| 8.16 | **Fallback (variante ausente):** em `CPU`, baixe o `tiny` (`.bin`) e clique em `Usar este`; volte ao `NPU (DirectML)` sem baixar a variante ONNX do `tiny` e dite | Ditado funciona na CPU; terminal `… whisper.cpp em CPU (fallback: Modelo tiny para ONNX não baixado)`; Hardware mostra o aviso "A aceleração NPU (DirectML) não iniciou. O PointSpeak está usando a CPU. Motivo: Modelo tiny para ONNX não baixado"; rodapé `· CPU` | ☐ | — | — |
+| 8.17 | **Fallback (modelo ONNX inválido):** feche o app, sobrescreva o começo do `models\onnx-base\encoder_model_fp16.onnx` mantendo o tamanho (PowerShell: `$f=[IO.File]::Open("<caminho>",'Open'); $f.Write((New-Object byte[] 64),0,64); $f.Close()`), com o `ggml-base.bin` também baixado (em `CPU`), abra e dite | Ditado funciona na CPU; motivo `DirectML não carregou o modelo ONNX: …` no aviso e no terminal. Depois ative outro modelo, remova o `base` (variante ONNX) e baixe de novo | ☐ | — | — |
+| 8.18 | Troque o backend para `CPU` | A lista de Modelos volta à variante ggml sozinha; o próximo ditado carrega o whisper.cpp (`transcrição: whisper.cpp em CPU`), sem aviso de fallback | ☐ | — | — |
+| 8.19 | Com a variante ONNX do modelo ativo ausente (8.16), baixe-a com o DirectML escolhido | Ao terminar, a bandeja passa por `Carregando modelo…` e o próximo ditado sai no DirectML (o fallback some) | ☐ | — | — |
+| 8.20 | (Dev, opcional) Linux, engine ONNX na CPU EP: `./scripts/fetch-onnxruntime.sh linux`, baixe a pasta `onnx-tiny` (URLs no `ONNX_CATALOG`) e rode `ORT_DYLIB_PATH=$PWD/target/onnxruntime/linux-x64/libonnxruntime.so cargo run -p pointspeak --release --example transcribe -- --backend cpu <pasta onnx-tiny> jfk.wav en` | Mesmo texto do whisper.cpp (`… ggml-tiny.bin jfk.wav en`); `--backend directml` no Linux sai com `DirectML is not supported in this build of ONNX Runtime` | — | ☐ | — |
