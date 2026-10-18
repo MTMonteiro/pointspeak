@@ -9,6 +9,7 @@ use tauri::WindowEvent;
 
 pub mod audio;
 mod config;
+pub mod models;
 mod tray;
 
 /// Rótulos das janelas declaradas no `tauri.conf.json`.
@@ -29,13 +30,20 @@ pub fn run() {
         // Plugin registrado sem atalho: o atalho entra na fase de integração com o SO.
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .manage(AppState::default())
+        .manage(models::ModelManager::default())
         .invoke_handler(tauri::generate_handler![
             audio::list_microphones,
             config::get_config,
-            config::set_config
+            config::set_config,
+            models::cancel_download,
+            models::download_model,
+            models::list_models,
+            models::remove_model,
+            models::set_active_model
         ])
         .setup(|app| {
             config::init(app.handle())?;
+            models::init(app.handle())?;
             tray::build(app.handle())?;
             Ok(())
         })

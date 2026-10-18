@@ -5,3 +5,4 @@ pub mod config;
 pub mod events;
 pub mod hotkey;
 pub mod hud;
+pub mod models;

@@ -3,15 +3,24 @@
 //! - `hud://state-changed`: `{ "state": "idle|recording|transcribing|success|error", "message"?: string }`.
 //!   `message` só aparece no estado `error`, com o texto curto da tabela de erros do design.
 //! - `hud://audio-level`: `{ "level": 0..=1 }`, RMS normalizado, a cada ~30 ms durante a gravação.
+//!
+//! Para a janela de Configurações:
+//! - `models://progress`: `{ "id", "state", "done", "total", "reason"? }` a cada mudança de estado de
+//!   um modelo (download, verificação, pronto, falha). `reason` só no estado `failed`.
 
 use serde::Serialize;
 
+use crate::config::ModelId;
 use crate::hud::HudState;
+use crate::models::ModelState;
 
 /// Nome do evento emitido a cada transição da máquina de estados do HUD.
 pub const HUD_STATE_CHANGED: &str = "hud://state-changed";
 /// Nome do evento com o nível de áudio que anima as barras do HUD.
 pub const HUD_AUDIO_LEVEL: &str = "hud://audio-level";
+
+/// Nome do evento com o progresso e o estado de um modelo (Model Manager).
+pub const MODELS_PROGRESS: &str = "models://progress";
 
 /// Máximo de caracteres de uma mensagem de erro do HUD (cabe nos 204 px da pílula).
 pub const MAX_ERROR_MESSAGE_CHARS: usize = 22;
@@ -96,6 +105,40 @@ impl AudioLevelPayload {
     }
 }
 
+/// Payload de `models://progress`. Fora do download, `done`/`total` valem o tamanho do arquivo
+/// (pronto/ativo) ou 0 (não baixado/falha) e `total` é sempre o tamanho do catálogo.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ModelProgressPayload {
+    pub id: ModelId,
+    pub state: &'static str,
+    pub done: u64,
+    pub total: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+impl ModelProgressPayload {
+    pub fn new(id: ModelId, state: &ModelState) -> Self {
+        let size = id.info().size_bytes;
+        let (done, total) = match state {
+            ModelState::Downloading { done, total } => (*done, *total),
+            ModelState::Verifying | ModelState::Ready | ModelState::Active => (size, size),
+            ModelState::NotDownloaded | ModelState::Failed { .. } => (0, size),
+        };
+        let reason = match state {
+            ModelState::Failed { reason } => Some(reason.clone()),
+            _ => None,
+        };
+        Self {
+            id,
+            state: state.as_str(),
+            done,
+            total,
+            reason,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -105,6 +148,44 @@ mod tests {
     fn event_names_match_design() {
         assert_eq!(HUD_STATE_CHANGED, "hud://state-changed");
         assert_eq!(HUD_AUDIO_LEVEL, "hud://audio-level");
+        assert_eq!(MODELS_PROGRESS, "models://progress");
+    }
+
+    #[test]
+    fn model_progress_payload_json() {
+        let downloading = ModelProgressPayload::new(
+            ModelId::Small,
+            &ModelState::Downloading {
+                done: 196,
+                total: 466,
+            },
+        );
+        assert_eq!(
+            serde_json::to_value(downloading).unwrap(),
+            json!({ "id": "small", "state": "downloading", "done": 196, "total": 466 })
+        );
+        let size = ModelId::Tiny.info().size_bytes;
+        assert_eq!(
+            serde_json::to_value(ModelProgressPayload::new(ModelId::Tiny, &ModelState::Ready))
+                .unwrap(),
+            json!({ "id": "tiny", "state": "ready", "done": size, "total": size })
+        );
+        let failed = ModelProgressPayload::new(
+            ModelId::Tiny,
+            &ModelState::Failed {
+                reason: "Download falhou: conexão perdida".into(),
+            },
+        );
+        assert_eq!(
+            serde_json::to_value(failed).unwrap(),
+            json!({
+                "id": "tiny",
+                "state": "failed",
+                "done": 0,
+                "total": size,
+                "reason": "Download falhou: conexão perdida"
+            })
+        );
     }
 
     #[test]
