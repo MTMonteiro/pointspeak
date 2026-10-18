@@ -164,6 +164,7 @@ export function Settings() {
   const activeSectionRef = useRef(activeSection);
   const [engineStatus, setEngineStatus] = useState<EngineStatus | null>(null);
   const [engineError, setEngineError] = useState<string>();
+  const engineStatusEventVersion = useRef(0);
   const [version, setVersion] = useState<string>();
   const [versionError, setVersionError] = useState<string>();
   const [microphones, setMicrophones] = useState<MicrophoneInfo[]>([]);
@@ -181,6 +182,20 @@ export function Settings() {
   const captureListenerCleanup = useRef<(() => void) | undefined>(undefined);
   const micListRequest = useRef(0);
   const mounted = useRef(true);
+
+  const refreshEngineStatus = useCallback(async () => {
+    const eventVersion = engineStatusEventVersion.current;
+    try {
+      const status = await invoke<EngineStatus>("get_engine_status");
+      if (!mounted.current || engineStatusEventVersion.current !== eventVersion) return;
+      setEngineStatus(status);
+      setEngineError(undefined);
+    } catch (error) {
+      if (mounted.current && engineStatusEventVersion.current === eventVersion) {
+        setEngineError(errorMessage(error));
+      }
+    }
+  }, []);
 
   const loadMicrophones = useCallback(async () => {
     const request = ++micListRequest.current;
@@ -268,6 +283,7 @@ export function Settings() {
     void listen<EngineStatus>(ENGINE_STATUS, ({ payload }) => {
       if (disposed) return;
       engineEventReceived = true;
+      engineStatusEventVersion.current += 1;
       setEngineStatus(payload);
       setEngineError(undefined);
     }).then((stop) => {
@@ -324,7 +340,7 @@ export function Settings() {
       }
       if (hotkeySuspendedRef.current) void releaseHotkey();
     };
-  }, [releaseHotkey, removeCaptureListener]);
+  }, [refreshEngineStatus, releaseHotkey, removeCaptureListener]);
 
   useEffect(() => {
     activeSectionRef.current = activeSection;
@@ -482,6 +498,7 @@ export function Settings() {
               error={errors.backend}
               engineStatus={engineStatus}
               onBackendChange={(backend) => void update({ backend })}
+              onRefreshEngineStatus={refreshEngineStatus}
             />
           </section>
 
