@@ -274,14 +274,20 @@ mod tests {
     use crate::config::ModelId;
     use serde_json::json;
 
-    fn reasons(os: TargetOs, probe: &HardwareProbe) -> Vec<(Backend, Option<&'static str>)> {
+    fn reasons(os: TargetOs, probe: &HardwareProbe) -> Vec<(Backend, Option<String>)> {
         backend_options(os, probe)
             .into_iter()
             .map(|o| {
                 assert_eq!(o.available, o.reason.is_none(), "{:?}", o.backend);
-                let reason = o.reason.map(|r| &*String::leak(r));
-                (o.backend, reason)
+                (o.backend, o.reason)
             })
+            .collect()
+    }
+
+    fn want(cards: &[(Backend, Option<&str>)]) -> Vec<(Backend, Option<String>)> {
+        cards
+            .iter()
+            .map(|&(backend, reason)| (backend, reason.map(str::to_string)))
             .collect()
     }
 
@@ -304,13 +310,13 @@ mod tests {
     fn linux_without_runtime() {
         assert_eq!(
             reasons(TargetOs::Linux, &HardwareProbe::cpu_only()),
-            [
+            want(&[
                 (Backend::Directml, Some(REASON_WINDOWS_ONLY)),
                 (Backend::Openvino, Some(REASON_ORT_NOT_FOUND)),
                 (Backend::Vulkan, Some(REASON_NOT_INCLUDED)),
                 (Backend::Cuda, Some(REASON_ORT_NOT_FOUND)),
                 (Backend::Cpu, None),
-            ]
+            ])
         );
     }
 
@@ -318,13 +324,13 @@ mod tests {
     fn windows_without_runtime() {
         assert_eq!(
             reasons(TargetOs::Windows, &HardwareProbe::cpu_only()),
-            [
+            want(&[
                 (Backend::Directml, Some(REASON_ORT_NOT_FOUND)),
                 (Backend::Openvino, Some(REASON_ORT_NOT_FOUND)),
                 (Backend::Vulkan, Some(REASON_NOT_INCLUDED)),
                 (Backend::Cuda, Some(REASON_ORT_NOT_FOUND)),
                 (Backend::Cpu, None),
-            ]
+            ])
         );
     }
 
@@ -336,18 +342,18 @@ mod tests {
         };
         assert_eq!(
             reasons(TargetOs::Windows, &probe),
-            [
+            want(&[
                 (Backend::Directml, Some(REASON_ORT_LOAD_FAILED)),
                 (Backend::Openvino, Some(REASON_ORT_LOAD_FAILED)),
                 (Backend::Vulkan, Some(REASON_NOT_INCLUDED)),
                 (Backend::Cuda, Some(REASON_ORT_LOAD_FAILED)),
                 (Backend::Cpu, None),
-            ]
+            ])
         );
         // Fora do Windows o DirectML continua com o motivo do SO.
         assert_eq!(
             reasons(TargetOs::Linux, &probe)[0],
-            (Backend::Directml, Some(REASON_WINDOWS_ONLY))
+            (Backend::Directml, Some(REASON_WINDOWS_ONLY.to_string()))
         );
     }
 
@@ -356,13 +362,13 @@ mod tests {
         // Pacote DirectML numa máquina sem adaptador DirectX 12: só a CPU do ONNX Runtime.
         assert_eq!(
             reasons(TargetOs::Windows, &loaded(&[])),
-            [
+            want(&[
                 (Backend::Directml, Some(REASON_NO_DIRECTML)),
                 (Backend::Openvino, Some(REASON_NO_INTEL)),
                 (Backend::Vulkan, Some(REASON_NOT_INCLUDED)),
                 (Backend::Cuda, Some(REASON_NO_NVIDIA)),
                 (Backend::Cpu, None),
-            ]
+            ])
         );
     }
 
@@ -384,13 +390,13 @@ mod tests {
         // Release oficial onnxruntime-linux-x64: só CPU.
         assert_eq!(
             reasons(TargetOs::Linux, &loaded(&[])),
-            [
+            want(&[
                 (Backend::Directml, Some(REASON_WINDOWS_ONLY)),
                 (Backend::Openvino, Some(REASON_NO_INTEL)),
                 (Backend::Vulkan, Some(REASON_NOT_INCLUDED)),
                 (Backend::Cuda, Some(REASON_NO_NVIDIA)),
                 (Backend::Cpu, None),
-            ]
+            ])
         );
         // Runtime com OpenVINO e CUDA; DirectML informado fora do Windows não vale.
         let options = backend_options(
@@ -416,7 +422,7 @@ mod tests {
         };
         assert_eq!(
             reasons(TargetOs::Linux, &missing)[2],
-            (Backend::Vulkan, Some(REASON_NO_VULKAN))
+            (Backend::Vulkan, Some(REASON_NO_VULKAN.to_string()))
         );
         let found = HardwareProbe {
             vulkan: VulkanStatus::Available {
