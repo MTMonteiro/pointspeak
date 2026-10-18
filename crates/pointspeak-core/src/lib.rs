@@ -6,3 +6,4 @@ pub mod events;
 pub mod hotkey;
 pub mod hud;
 pub mod models;
+pub mod transcriber;
