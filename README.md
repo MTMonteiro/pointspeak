@@ -52,7 +52,7 @@ chmod +x PointSpeak_1.0.0_amd64.AppImage
 2. Clique no ícone (ou abra o menu dele) → **Configurações…**.
 3. Em **Modelos**, baixe um modelo e clique em **Usar este**. O `base` (142 MB) é um bom começo; o `small`
    acerta mais e é mais lento; o `tiny` é o mais rápido.
-4. Em **Idioma**, escolha Português, Inglês ou Automático.
+4. Em **Idioma**, escolha Português, Inglês ou Automático. Em **Saída**, escolha se o texto é colado onde está o cursor (padrão) ou só copiado para a área de transferência, para você colar com Ctrl+V (o conteúdo anterior dela é substituído).
 5. Feche as Configurações. Quando a bandeja mostrar `Pronto (Alt+Z)`, clique onde quer escrever,
    **segure `Alt+Z`**, fale e solte. O texto é colado ali.
 
