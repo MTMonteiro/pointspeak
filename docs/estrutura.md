@@ -5,13 +5,13 @@ Onde fica cada coisa (atualize quando criar ou mover pastas).
 - `.gitignore`: o que o git ignora (segredos, `node_modules/`, `dist/`, `target/`, `.runner/`)
 - `AGENTS.md`: instruções para agentes de IA e pessoas
 - `CLAUDE.md`: aponta para o `AGENTS.md`
-- `README.md`: apresentação do projeto
-- `docs/`: produto, tecnologia e esta estrutura
+- `README.md`: guia do usuário (o que é, requisitos, instalação, primeiro uso, privacidade, problemas comuns)
+- `docs/`: produto, tecnologia (inclui tamanhos e SHA-256 dos instaladores 1.0.0) e esta estrutura
   - `docs/design/`: visual do app, mantido pela persona `designer`
     - `DESIGN.md`: tokens, medidas do HUD, animações, seções das Configurações, componentes, menu da bandeja
     - `README.md`: como abrir as telas, mapa estado/seção → arquivo, guia React/Tailwind
     - `telas/hud.html`, `telas/settings.html`: protótipos estáticos (abrem no navegador, sem build)
-  - `docs/checklist-manual.md`: roteiro de validação manual no Windows (.exe) e no Linux X11/Wayland
+  - `docs/checklist-manual.md`: roteiro de aceite 1.0.0 (ordem de execução, itens no Windows .exe e no Linux X11/Wayland, DirectML, pacote Linux e riscos aceitos)
   - `docs/memoria/`: aprendizados entre tasks
 - `scripts/build-linux.sh`: gera os pacotes Linux (.deb e AppImage) com o `libonnxruntime.so` (CPU) e o Silero VAD e confere o conteúdo
 - `scripts/build-windows.sh`: gera o instalador Windows (.exe NSIS) por compilação cruzada (chama o `fetch-onnxruntime.sh` e põe as DLLs do ONNX Runtime no instalador)
