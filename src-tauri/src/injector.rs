@@ -82,12 +82,24 @@ fn worker() -> &'static mpsc::Sender<Job> {
             .spawn(move || {
                 let mut injector = Injector::default();
                 for job in rx {
-                    let result = injector.run(&job.text, job.display);
+                    let result = run_guarded(&mut injector, |i| i.run(&job.text, job.display));
                     let _ = job.reply.send(result);
                 }
             })
             .expect("não foi possível criar a thread do injector");
         tx
+    })
+}
+
+/// Roda uma colagem sem deixar um pânico (arboard, enigo, X11) matar a thread do injector: o erro
+/// volta como [`InjectError::Worker`] e o estado é recriado na próxima colagem.
+fn run_guarded<T: Default>(
+    state: &mut T,
+    job: impl FnOnce(&mut T) -> Result<(), InjectError>,
+) -> Result<(), InjectError> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| job(state))).unwrap_or_else(|_| {
+        *state = T::default();
+        Err(InjectError::Worker)
     })
 }
 
@@ -219,6 +231,26 @@ fn is_executable(path: &Path) -> bool {
     path.is_file()
 }
 
+/// Pede ao SO para não guardar o texto no histórico do clipboard: no Windows, fora do histórico
+/// (Win+V) e da sincronização na nuvem; no Linux, a dica `x-kde-passwordManagerHint` que o Klipper e
+/// outros gerenciadores respeitam. O app em foco cola normalmente.
+fn private(set: arboard::Set<'_>) -> arboard::Set<'_> {
+    #[cfg(windows)]
+    {
+        use arboard::SetExtWindows;
+        set.exclude_from_history().exclude_from_cloud()
+    }
+    #[cfg(target_os = "linux")]
+    {
+        use arboard::SetExtLinux;
+        set.exclude_from_history()
+    }
+    #[cfg(not(any(windows, target_os = "linux")))]
+    {
+        set
+    }
+}
+
 /// Adapta o `arboard::Clipboard` à sequência pura.
 struct ArboardClipboard<'a>(&'a mut Clipboard);
 
@@ -232,7 +264,7 @@ impl ClipboardLike for ArboardClipboard<'_> {
     }
 
     fn set_text(&mut self, text: &str) -> Result<(), ClipboardError> {
-        self.0.set_text(text).map_err(clipboard_error)
+        private(self.0.set()).text(text).map_err(clipboard_error)
     }
 
     fn clear(&mut self) -> Result<(), ClipboardError> {
@@ -412,5 +444,20 @@ mod tests {
 
         let path = std::env::join_paths([first.path(), second.path()]).unwrap();
         assert_eq!(find_in_path("ydotool", Some(path)), Some(tool));
+    }
+
+    #[test]
+    fn panic_in_paste_becomes_error_and_resets_state() {
+        let mut state = vec![1, 2, 3];
+        let result = run_guarded(&mut state, |_| panic!("pânico simulado na colagem"));
+        assert!(matches!(result, Err(InjectError::Worker)));
+        assert!(state.is_empty());
+        // A thread segue viva: a próxima colagem roda normalmente.
+        assert!(run_guarded(&mut state, |s| {
+            s.push(7);
+            Ok(())
+        })
+        .is_ok());
+        assert_eq!(state, [7]);
     }
 }

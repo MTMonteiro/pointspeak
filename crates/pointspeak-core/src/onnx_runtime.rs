@@ -38,8 +38,10 @@ pub struct LibraryCandidate {
     pub path: PathBuf,
 }
 
-/// Caminhos a tentar, na ordem. `env` é o valor de `ORT_DYLIB_PATH` (vazio = ausente). Pastas
-/// repetidas (no Windows a de recursos é a do executável) aparecem uma vez só.
+/// Caminhos a tentar, na ordem. `env` é o valor de `ORT_DYLIB_PATH` (vazio = ausente). Caminho
+/// relativo na variável é ignorado: ele seria resolvido pela pasta atual, que não é do app (risco de
+/// carregar uma biblioteca plantada). Pastas repetidas (no Windows a de recursos é a do executável)
+/// aparecem uma vez só.
 pub fn library_candidates(
     os: TargetOs,
     env: Option<&OsStr>,
@@ -48,7 +50,7 @@ pub fn library_candidates(
 ) -> Vec<LibraryCandidate> {
     let name = library_file_name(os);
     let mut candidates = Vec::new();
-    if let Some(env) = env.filter(|v| !v.is_empty()) {
+    if let Some(env) = env.filter(|v| is_absolute(os, v)) {
         candidates.push(LibraryCandidate {
             source: LibrarySource::EnvVar,
             path: PathBuf::from(env),
@@ -65,6 +67,23 @@ pub fn library_candidates(
         }
     }
     candidates
+}
+
+/// Caminho absoluto na grafia do SO alvo (o teste roda no Linux também para o Windows): `C:\…`,
+/// `C:/…` ou `\\servidor\…` no Windows, `/…` nos demais.
+fn is_absolute(os: TargetOs, path: &OsStr) -> bool {
+    let path = path.to_string_lossy();
+    match os {
+        TargetOs::Windows => {
+            let bytes = path.as_bytes();
+            path.starts_with(r"\\")
+                || (bytes.len() >= 3
+                    && bytes[0].is_ascii_alphabetic()
+                    && bytes[1] == b':'
+                    && matches!(bytes[2], b'\\' | b'/'))
+        }
+        TargetOs::Linux | TargetOs::Other => path.starts_with('/'),
+    }
 }
 
 /// Primeiro candidato que `exists`; sem nenhum, devolve os caminhos tentados (para o log).
@@ -141,6 +160,42 @@ mod tests {
             [(LibrarySource::ExeDir, exe.join("libonnxruntime.so"))]
         );
         assert!(library_candidates(TargetOs::Linux, None, None, None).is_empty());
+    }
+
+    #[test]
+    fn relative_env_path_is_ignored() {
+        let exe = Path::new("/usr/bin");
+        for relative in [
+            "libonnxruntime.so",
+            "./lib/libonnxruntime.so",
+            "../x/libonnxruntime.so",
+        ] {
+            let candidates =
+                library_candidates(TargetOs::Linux, Some(OsStr::new(relative)), None, Some(exe));
+            assert_eq!(
+                paths(&candidates),
+                [(LibrarySource::ExeDir, exe.join("libonnxruntime.so"))],
+                "{relative}"
+            );
+        }
+        for relative in [
+            r"onnxruntime.dll",
+            r"lib\onnxruntime.dll",
+            r"C:onnxruntime.dll",
+        ] {
+            let candidates =
+                library_candidates(TargetOs::Windows, Some(OsStr::new(relative)), None, None);
+            assert!(candidates.is_empty(), "{relative}");
+        }
+        for absolute in [
+            r"C:\ort\onnxruntime.dll",
+            "C:/ort/onnxruntime.dll",
+            r"\\srv\ort\onnxruntime.dll",
+        ] {
+            let candidates =
+                library_candidates(TargetOs::Windows, Some(OsStr::new(absolute)), None, None);
+            assert_eq!(candidates[0].source, LibrarySource::EnvVar, "{absolute}");
+        }
     }
 
     #[test]
