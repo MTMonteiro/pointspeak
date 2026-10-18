@@ -1,0 +1,27 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "settings",
+  "description": "Janela de Configurações: APIs padrão do core e os comandos do app.",
+  "windows": [
+    "settings"
+  ],
+  "permissions": [
+    "core:default",
+    "allow-cancel-download",
+    "allow-download-model",
+    "allow-get-config",
+    "allow-get-engine-status",
+    "allow-list-backends",
+    "allow-list-microphones",
+    "allow-list-models",
+    "allow-load-transcriber",
+    "allow-open-logs-dir",
+    "allow-open-models-dir",
+    "allow-remove-model",
+    "allow-set-active-model",
+    "allow-set-config",
+    "allow-start-mic-test",
+    "allow-stop-mic-test",
+    "allow-suspend-hotkey"
+  ]
+}
