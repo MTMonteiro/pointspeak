@@ -8,8 +8,9 @@
 //! A detecção ([`hardware`]) roda uma vez e fica em cache: o `setup` a dispara numa thread
 //! ([`detect_in_background`]); quem pede antes de ela terminar espera o mesmo resultado. Para cada
 //! EP (DirectML, OpenVINO, CUDA) ela confere se o runtime a traz (`is_available`) e se registra
-//! numa sessão de teste (sem modelo: o DirectML cria o dispositivo DirectX 12 aqui). A transcrição
-//! ONNX e o Silero VAD chegam nas próximas etapas.
+//! numa sessão de teste (sem modelo: o DirectML cria o dispositivo DirectX 12 aqui). O `Environment`
+//! criado fica guardado ([`environment`]): o `ort` só aceita um por processo, e o Silero VAD
+//! (`vad.rs`) cria a sessão dele nesse mesmo. A transcrição ONNX chega na próxima etapa.
 
 use std::env;
 use std::path::{Path, PathBuf};
@@ -26,19 +27,26 @@ use pointspeak_core::settings::{
 use tauri::{AppHandle, Manager, Runtime};
 
 static PROBE: OnceLock<HardwareProbe> = OnceLock::new();
+static ENVIRONMENT: OnceLock<ort::environment::Environment> = OnceLock::new();
 
 /// Resultado da detecção (roda na primeira chamada; as outras esperam ou reaproveitam).
 pub fn hardware<R: Runtime>(app: &AppHandle<R>) -> &'static HardwareProbe {
     PROBE.get_or_init(|| detect(app.path().resource_dir().ok().as_deref()))
 }
 
-/// Dispara a detecção fora da thread principal (no `setup`).
+/// Environment do ONNX Runtime, se a detecção já carregou a biblioteca (só depois de [`hardware`]).
+pub fn environment() -> Option<&'static ort::environment::Environment> {
+    ENVIRONMENT.get()
+}
+
+/// Dispara a detecção fora da thread principal (no `setup`); em seguida carrega o Silero VAD.
 pub fn detect_in_background<R: Runtime>(app: &AppHandle<R>) {
     let app = app.clone();
     let spawned = thread::Builder::new()
         .name("pointspeak-hw-detect".into())
         .spawn(move || {
             hardware(&app);
+            crate::vad::warm_up(&app);
         });
     if let Err(e) = spawned {
         log::warn!("detecção de hardware: thread não iniciou ({e}); roda no primeiro uso");
@@ -80,10 +88,11 @@ fn detect_onnx(resource_dir: Option<&Path>) -> OnnxRuntimeStatus {
         Err(e) => return load_failed(&library, &e),
     };
     log::info!("ONNX Runtime carregado de {}", library.display());
+    let environment = ENVIRONMENT.get_or_init(|| environment);
     let providers = [
-        probe_provider(&environment, Backend::Directml, ep::DirectML::default()),
-        probe_provider(&environment, Backend::Openvino, ep::OpenVINO::default()),
-        probe_provider(&environment, Backend::Cuda, ep::CUDA::default()),
+        probe_provider(environment, Backend::Directml, ep::DirectML::default()),
+        probe_provider(environment, Backend::Openvino, ep::OpenVINO::default()),
+        probe_provider(environment, Backend::Cuda, ep::CUDA::default()),
     ];
     OnnxRuntimeStatus::Loaded {
         providers: providers.into_iter().flatten().collect(),
