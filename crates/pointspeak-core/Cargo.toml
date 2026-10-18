@@ -6,6 +6,7 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+rubato = "5"
 serde = { version = "1", features = ["derive"] }
 thiserror = "2"
 
