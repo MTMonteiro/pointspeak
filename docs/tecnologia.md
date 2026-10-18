@@ -158,6 +158,18 @@ O instalador Windows sai deste Linux pelo caminho documentado do Tauri v2 (cargo
 - **Espaço em disco:** medido no esqueleto (task #754): `target/x86_64-pc-windows-msvc/` ~0,8 GB, `target/release/` ~0,45 GB (build scripts e proc-macros do host, compilados em release) e `~/.cache/cargo-xwin` ~1,1 GB (só uma vez por máquina). Total ~2,4 GB, fora o `target/debug` dos checks (~4 GB). Primeiro build: ~4 min (inclui baixar o CRT/SDK). Se faltar espaço, apague só `target/x86_64-pc-windows-msvc/debug` (se existir) ou o `target/x86_64-pc-windows-msvc/` inteiro, nunca o cache do xwin à toa.
 - **Limitações:** validado o esqueleto (Tauri + bandeja + atalho global) e, desde a task #763, o `cpal` (WASAPI); desde a task #764, o `reqwest` com `rustls`/`ring` (o instalador passou a ~3,5 MiB). desde a task #765, o whisper.cpp (`whisper-rs`, estático, CPU AVX2). Desde a task #791, o ONNX Runtime (`ort` `load-dynamic`, DLLs no instalador; a detecção do DirectML só é validada num Windows de verdade). O .exe só é testado de verdade num Windows (manual, pelo dono).
 
+## Instaladores 1.0.0
+Gerados na task #808 a partir do estado final da 1.0.0, com `./scripts/build-windows.sh` e `./scripts/build-linux.sh` (os dois saíram sem erro e com as conferências dos scripts passando: `pointspeak.exe` sem import estático do `onnxruntime.dll`; `onnxruntime.dll`, `DirectML.dll` e `resources\silero_vad.onnx` no `installer.nsi`; `libonnxruntime.so` e o Silero VAD no .deb e no AppImage). Confira o arquivo recebido com `sha256sum` (Linux) ou `Get-FileHash` (PowerShell).
+
+| Arquivo | Caminho | Tamanho | SHA-256 |
+| --- | --- | --- | --- |
+| `PointSpeak_1.0.0_x64-setup.exe` | `target/x86_64-pc-windows-msvc/release/bundle/nsis/` | 18,7 MiB (19.567.934 bytes) | `22e2ef38a3ea2e1e2bf39589044894a5eb8ad39c7f3c95e393ff57b78c5bed8a` |
+| `PointSpeak_1.0.0_amd64.deb` | `target/release/bundle/deb/` | 13,3 MiB (13.988.860 bytes) | `9473c87148cee40e49abafbb7217736d8d9dc1d42f0108f38445d8d233febc73` |
+| `PointSpeak_1.0.0_amd64.AppImage` | `target/release/bundle/appimage/` | 87,4 MiB (91.695.608 bytes) | `fa9c9278976d9a3a26654a2044346e9886433cb06c420e220af2f9e7e7489bd0` |
+
+- O `pointspeak.exe` dentro do instalador tem 7,5 MiB (7.862.272 bytes). Não foi conferido se o build é reprodutível byte a byte: os hashes valem para os arquivos desta entrega; um build novo do mesmo commit pode sair com outro SHA-256.
+- Tempo neste runner (8 núcleos, `target/` vazio, caches do cargo-xwin e do linuxdeploy já presentes): Windows 4 min 07 s e Linux (.deb + AppImage) 4 min 40 s, em sequência. Espaço depois dos dois: `target/x86_64-pc-windows-msvc/` 1,3 GB e `target/release/` 2,2 GB.
+
 ## Segurança e privacidade
 Revisão da task #807 (achados e o que ficou de fora na ficha da task). Garantias que o código mantém:
 
