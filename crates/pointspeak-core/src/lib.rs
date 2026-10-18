@@ -13,3 +13,4 @@ pub mod onnx_runtime;
 pub mod settings;
 pub mod transcriber;
 pub mod vad;
+pub mod whisper_onnx;

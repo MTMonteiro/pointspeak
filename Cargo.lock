@@ -2920,6 +2920,7 @@ dependencies = [
 name = "pointspeak-core"
 version = "0.1.0"
 dependencies = [
+ "realfft",
  "rubato",
  "serde",
  "serde_json",
