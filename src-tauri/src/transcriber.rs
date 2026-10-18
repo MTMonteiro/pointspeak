@@ -19,7 +19,7 @@ use std::sync::{MutexGuard, Once};
 
 use pointspeak_core::config::{AppConfig, Backend};
 use pointspeak_core::engine::{
-    backend_label, load_with_fallback, EnginePlan, EngineRuntime, GgmlGpu, OnnxLoadError,
+    load_with_fallback, runtime_label, EnginePlan, EngineRuntime, GgmlGpu, OnnxLoadError,
 };
 use pointspeak_core::models::{onnx_model_ready, ModelVariant};
 use pointspeak_core::transcriber::{
@@ -173,7 +173,7 @@ fn load_engine(
     let loaded = load_with_fallback(
         plan,
         &onnx_dir,
-        |backend| {
+        |backend, device| {
             let environment = onnx::environment()
                 .ok_or_else(|| OnnxLoadError::Provider("ONNX Runtime não carregado".into()))?;
             let engine = OrtWhisperTranscriber::load(
@@ -181,8 +181,14 @@ fn load_engine(
                 &onnx_dir,
                 plan.model.onnx_info(),
                 backend,
+                device,
             )
-            .inspect_err(|e| eprintln!("[pointspeak] engine ONNX ({backend:?}): {e:?}"))?;
+            .inspect_err(|e| {
+                eprintln!(
+                    "[pointspeak] engine ONNX ({}): {e:?}",
+                    runtime_label(backend, device)
+                )
+            })?;
             Ok(Box::new(engine) as Box<dyn Transcriber>)
         },
         |backend| {
@@ -191,20 +197,11 @@ fn load_engine(
         },
     )?;
     let runtime = loaded.runtime;
-    // Uma linha por carga: o checklist manual confere o backend (e o fallback) por ela.
-    match &runtime.fallback {
-        Some(reason) => eprintln!(
-            "[pointspeak] transcrição: {} em {} (fallback: {})",
-            runtime.kind.name(),
-            backend_label(runtime.backend),
-            reason.message()
-        ),
-        None => eprintln!(
-            "[pointspeak] transcrição: {} em {}",
-            runtime.kind.name(),
-            backend_label(runtime.backend)
-        ),
-    }
+    // Uma linha por carga: o checklist manual confere o backend, o dispositivo do DirectML (NPU ou
+    // GPU) e os fallbacks por ela.
+    let summary = runtime.summary();
+    log::info!("transcrição: {summary}");
+    eprintln!("[pointspeak] transcrição: {summary}");
     Ok((loaded.engine, runtime))
 }
 

@@ -2,8 +2,8 @@
 //!
 //! Lê a variante ONNX do modelo (`onnx-<id>/`: `encoder_model_fp16.onnx`,
 //! `decoder_model_merged_fp16.onnx`, `vocab.json`, `added_tokens.json`) e cria as duas sessões
-//! com a execution provider do backend efetivo: DirectML (`DmlExecutionProvider`, GPU ou NPU),
-//! OpenVINO ou CUDA. A CPU EP do ONNX Runtime fica sempre por baixo e roda o que a EP não
+//! com a execution provider do backend efetivo: DirectML (`DmlExecutionProvider`, no dispositivo
+//! pedido: NPU ou GPU, na ordem do núcleo, `engine::DmlDevice::ORDER`), OpenVINO ou CUDA. A CPU EP do ONNX Runtime fica sempre por baixo e roda o que a EP não
 //! suporta. O log-mel, os tokens e a decodificação gulosa vêm do núcleo
 //! (`pointspeak_core::whisper_onnx`); aqui só entram as sessões e o KV cache.
 //!
@@ -22,7 +22,7 @@ use ort::session::builder::{GraphOptimizationLevel, SessionBuilder};
 use ort::session::{Session, SessionInputValue};
 use ort::value::{DynValue, Tensor, ValueType};
 use pointspeak_core::config::Backend;
-use pointspeak_core::engine::OnnxLoadError;
+use pointspeak_core::engine::{DmlDevice, OnnxLoadError};
 use pointspeak_core::models::OnnxModelInfo;
 use pointspeak_core::transcriber::{TranscribeError, TranscribeOptions, Transcriber};
 use pointspeak_core::whisper_onnx::mel::N_FRAMES;
@@ -48,11 +48,16 @@ const KV_PARTS: [(&str, &str); 4] = [
     ("encoder", "value"),
 ];
 
-/// DirectML do app: GPU ou NPU (o que o Windows achar de mais rápido). A detecção (`onnx.rs`)
-/// usa a mesma configuração.
-pub fn directml() -> ep::DirectML {
+/// DirectML do app no `device`: NPU (`DeviceFilter::Npu`) ou GPU (`DeviceFilter::Gpu`, a dedicada
+/// antes da integrada). Com `DeviceFilter::Any` o Windows escolhe a GPU e a NPU nunca roda; quem
+/// decide a ordem é o núcleo. A detecção (`onnx.rs`) usa a mesma configuração.
+pub fn directml(device: DmlDevice) -> ep::DirectML {
+    let filter = match device {
+        DmlDevice::Npu => ep::directml::DeviceFilter::Npu,
+        DmlDevice::Gpu => ep::directml::DeviceFilter::Gpu,
+    };
     ep::DirectML::default()
-        .with_device_filter(ep::directml::DeviceFilter::Any)
+        .with_device_filter(filter)
         .with_performance_preference(ep::directml::PerformancePreference::HighPerformance)
 }
 
@@ -75,7 +80,8 @@ struct CacheDims {
 }
 
 impl OrtWhisperTranscriber {
-    /// Abre a pasta `dir` do modelo `info` com a EP de `backend` (`Cpu` = só a CPU EP).
+    /// Abre a pasta `dir` do modelo `info` com a EP de `backend` (`Cpu` = só a CPU EP). No DirectML,
+    /// `device` escolhe o dispositivo (sem ele, a GPU) e o encoder e o decoder abrem nele.
     ///
     /// Falha no registro da EP → [`OnnxLoadError::Provider`]; arquivo, vocabulário ou sessão que
     /// não abrem → [`OnnxLoadError::Model`].
@@ -84,6 +90,7 @@ impl OrtWhisperTranscriber {
         dir: &Path,
         info: &OnnxModelInfo,
         backend: Backend,
+        device: Option<DmlDevice>,
     ) -> Result<Self, OnnxLoadError> {
         let read = |name: &str| {
             fs::read_to_string(dir.join(name))
@@ -94,8 +101,10 @@ impl OrtWhisperTranscriber {
             &read(info.added_tokens.file_name())?,
         )
         .map_err(|e| OnnxLoadError::Model(e.to_string()))?;
-        let encoder = open_session(environment, backend, &dir.join(info.encoder.file_name()))?;
-        let decoder = open_session(environment, backend, &dir.join(info.decoder.file_name()))?;
+        let device = device.unwrap_or(DmlDevice::Gpu);
+        let open = |file: &str| open_session(environment, backend, device, &dir.join(file));
+        let encoder = open(info.encoder.file_name())?;
+        let decoder = open(info.decoder.file_name())?;
         let dims = cache_dims(&decoder).map_err(OnnxLoadError::Model)?;
         Ok(Self {
             encoder,
@@ -140,10 +149,11 @@ impl Transcriber for OrtWhisperTranscriber {
     }
 }
 
-/// Sessão com a EP do backend; a CPU EP do ONNX Runtime fica por baixo.
+/// Sessão com a EP do backend (no DirectML, no `device`); a CPU EP do ONNX Runtime fica por baixo.
 fn open_session(
     environment: &Environment,
     backend: Backend,
+    device: DmlDevice,
     model: &Path,
 ) -> Result<Session, OnnxLoadError> {
     let model_err = |e: ort::Error<SessionBuilder>| OnnxLoadError::Model(e.to_string());
@@ -165,17 +175,21 @@ fn open_session(
             .with_parallel_execution(false)
             .map_err(provider_err)?;
     }
-    register_provider(&mut builder, backend)?;
+    register_provider(&mut builder, backend, device)?;
     let name = model.file_name().unwrap_or_default().to_string_lossy();
     builder
         .commit_from_file(model)
         .map_err(|e| OnnxLoadError::Model(format!("{name}: {e}")))
 }
 
-fn register_provider(builder: &mut SessionBuilder, backend: Backend) -> Result<(), OnnxLoadError> {
+fn register_provider(
+    builder: &mut SessionBuilder,
+    backend: Backend,
+    device: DmlDevice,
+) -> Result<(), OnnxLoadError> {
     let provider = |e: ort::Error| OnnxLoadError::Provider(e.to_string());
     match backend {
-        Backend::Directml => directml().register(builder).map_err(provider),
+        Backend::Directml => directml(device).register(builder).map_err(provider),
         Backend::Openvino => ep::OpenVINO::default().register(builder).map_err(provider),
         Backend::Cuda => ep::CUDA::default().register(builder).map_err(provider),
         Backend::Auto | Backend::Cpu | Backend::Vulkan => Ok(()),
@@ -391,6 +405,7 @@ mod tests {
             Path::new(&dir),
             ModelId::Tiny.onnx_info(),
             Backend::Cpu,
+            None,
         )
         .unwrap_or_else(|e| panic!("{e:?}"));
         let opts = TranscribeOptions {
