@@ -14,8 +14,8 @@ use std::path::Path;
 
 use crate::config::{Backend, ModelId};
 use crate::models::ModelVariant;
-use crate::settings::{BackendOption, REASON_NOT_INCLUDED};
-use crate::transcriber::TranscribeError;
+use crate::settings::{effective_backend, BackendOption, REASON_NOT_INCLUDED};
+use crate::transcriber::{EngineKey, TranscribeError};
 
 /// Tamanho máximo do erro do ONNX Runtime no motivo do fallback (o resto vai para o log).
 pub const MAX_ERROR_CHARS: usize = 120;
@@ -173,6 +173,37 @@ pub struct EnginePlan {
 }
 
 impl EnginePlan {
+    /// Plano para o modelo do config: backend efetivo pelos cartões e engines
+    /// (`settings::effective_backend`) e o fallback de escolha.
+    pub fn new(
+        model: ModelId,
+        requested: Backend,
+        options: &[BackendOption],
+        engines: &[Backend],
+        gpu: GgmlGpu,
+        onnx_ready: bool,
+        ggml_ready: bool,
+    ) -> Self {
+        let backend = effective_backend(requested, options, engines);
+        Self {
+            model,
+            requested,
+            backend,
+            unavailable: unavailable_fallback(requested, backend, options),
+            onnx_ready,
+            ggml_ready,
+            gpu,
+        }
+    }
+
+    /// Chave da engine no `EngineSlot`: modelo e backend efetivo (antes do fallback).
+    pub fn key(&self) -> EngineKey {
+        EngineKey {
+            model: self.model,
+            backend: self.backend,
+        }
+    }
+
     /// Engine do backend efetivo, antes de qualquer fallback.
     pub fn kind(&self) -> EngineKind {
         engine_kind(self.backend, self.gpu)
@@ -662,6 +693,46 @@ mod tests {
         .err()
         .unwrap();
         assert_eq!(err, TranscribeError::Load("ggml corrompido".into()));
+    }
+
+    #[test]
+    fn plan_from_the_detected_cards() {
+        let options = windows_with_directml();
+        let engines = crate::settings::engine_backends(false);
+        let p = EnginePlan::new(
+            ModelId::Small,
+            Backend::Auto,
+            &options,
+            &engines,
+            GgmlGpu::default(),
+            true,
+            false,
+        );
+        assert_eq!(p.backend, Backend::Directml);
+        assert_eq!(p.kind(), EngineKind::Onnx);
+        assert_eq!(p.unavailable, None);
+        assert_eq!(
+            p.key(),
+            EngineKey {
+                model: ModelId::Small,
+                backend: Backend::Directml
+            }
+        );
+        // OpenVINO pedido sem dispositivo Intel: CPU, com o motivo do cartão.
+        let p = EnginePlan::new(
+            ModelId::Small,
+            Backend::Openvino,
+            &options,
+            &engines,
+            GgmlGpu::default(),
+            true,
+            true,
+        );
+        assert_eq!(p.backend, Backend::Directml);
+        assert_eq!(
+            p.unavailable.unwrap().message(),
+            "Nenhum dispositivo Intel compatível"
+        );
     }
 
     #[test]

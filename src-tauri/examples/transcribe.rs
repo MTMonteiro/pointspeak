@@ -1,6 +1,12 @@
-//! Transcreve um WAV com o whisper.cpp, sem abrir o app.
+//! Transcreve um WAV com o whisper.cpp ou com o ONNX Runtime, sem abrir o app.
 //!
-//! `cargo run -p pointspeak --example transcribe -- <modelo.bin> <audio.wav> [pt|en|auto]`
+//! `cargo run -p pointspeak --release --example transcribe -- [--backend <cpu|directml|openvino|cuda>]
+//! <modelo> <audio.wav> [pt|en|auto]`
+//!
+//! - `<modelo>` arquivo (`ggml-*.bin`): whisper.cpp; só com `--backend cpu` (o padrão).
+//! - `<modelo>` pasta (`onnx-<id>/`, como o app baixa): engine ONNX com a EP do `--backend`
+//!   (`cpu` = só a CPU EP do ONNX Runtime). O ONNX Runtime vem do `ORT_DYLIB_PATH` (ou de junto do
+//!   executável), como no app. EP que não inicia é erro aqui: o fallback é do app.
 //!
 //! O WAV (qualquer taxa e número de canais, inteiro ou float) passa pelo mesmo downmix e resample
 //! para 16 kHz mono do pipeline de áudio do app (`pointspeak_core::audio`).
@@ -10,16 +16,36 @@ use std::process::ExitCode;
 use std::time::Instant;
 
 use pointspeak_core::audio::{downmix_to_mono, MonoResampler};
-use pointspeak_core::config::Language;
-use pointspeak_core::transcriber::{self, TranscribeOptions};
+use pointspeak_core::config::{Backend, Language};
+use pointspeak_core::models::ONNX_CATALOG;
+use pointspeak_core::transcriber::{self, TranscribeOptions, Transcriber};
+use pointspeak_lib::onnx;
+use pointspeak_lib::onnx_whisper::OrtWhisperTranscriber;
 use pointspeak_lib::transcriber::WhisperTranscriber;
 
+const USAGE: &str = "uso: transcribe [--backend <cpu|directml|openvino|cuda>] <modelo.bin|pasta onnx-<id>> <audio.wav> [pt|en|auto]";
+
 fn main() -> ExitCode {
-    let args: Vec<String> = std::env::args().skip(1).collect();
+    let mut args: Vec<String> = std::env::args().skip(1).collect();
+    let mut backend = Backend::Cpu;
+    if let Some(i) = args.iter().position(|a| a == "--backend") {
+        let value = args.get(i + 1).cloned().unwrap_or_default();
+        backend = match value.as_str() {
+            "cpu" => Backend::Cpu,
+            "directml" => Backend::Directml,
+            "openvino" => Backend::Openvino,
+            "cuda" => Backend::Cuda,
+            other => {
+                eprintln!("backend inválido: {other:?} (use cpu, directml, openvino ou cuda)");
+                return ExitCode::from(2);
+            }
+        };
+        args.drain(i..(i + 2).min(args.len()));
+    }
     let (model, wav) = match args.as_slice() {
         [model, wav] | [model, wav, _] => (model, wav),
         _ => {
-            eprintln!("uso: transcribe <modelo.bin> <audio.wav> [pt|en|auto]");
+            eprintln!("{USAGE}");
             return ExitCode::from(2);
         }
     };
@@ -32,7 +58,7 @@ fn main() -> ExitCode {
             return ExitCode::from(2);
         }
     };
-    match run(Path::new(model), Path::new(wav), language) {
+    match run(Path::new(model), Path::new(wav), language, backend) {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             eprintln!("erro: {e}");
@@ -41,22 +67,53 @@ fn main() -> ExitCode {
     }
 }
 
-fn run(model: &Path, wav: &Path, language: Language) -> Result<(), String> {
+/// Engine ONNX da pasta `onnx-<id>` com a EP do backend.
+fn load_onnx(dir: &Path, backend: Backend) -> Result<OrtWhisperTranscriber, String> {
+    let name = dir.file_name().unwrap_or_default().to_string_lossy();
+    let info = ONNX_CATALOG
+        .iter()
+        .find(|m| m.dir_name == name)
+        .ok_or_else(|| {
+            format!(
+                "pasta {name:?} não é de um modelo do catálogo (use onnx-<id>, como o app baixa)"
+            )
+        })?;
+    let probe = onnx::detect(None);
+    let environment = onnx::environment().ok_or_else(|| {
+        format!(
+            "ONNX Runtime indisponível ({:?}); defina ORT_DYLIB_PATH",
+            probe.onnx
+        )
+    })?;
+    OrtWhisperTranscriber::load(environment, dir, info, backend).map_err(|e| format!("{e:?}"))
+}
+
+fn run(model: &Path, wav: &Path, language: Language, backend: Backend) -> Result<(), String> {
     let audio = read_wav_16k_mono(wav)?;
     let secs = audio.len() as f64 / 16_000.0;
 
     let started = Instant::now();
-    let mut engine = WhisperTranscriber::load(model).map_err(|e| e.to_string())?;
+    let mut engine: Box<dyn Transcriber> = if model.is_dir() {
+        Box::new(load_onnx(model, backend)?)
+    } else if backend == Backend::Cpu {
+        Box::new(WhisperTranscriber::load(model).map_err(|e| e.to_string())?)
+    } else {
+        return Err(format!(
+            "--backend {backend:?} usa a engine ONNX: passe a pasta onnx-<id>, não um .bin"
+        ));
+    };
     let load = started.elapsed();
 
     let started = Instant::now();
     let opts = TranscribeOptions { language };
-    let text = transcriber::transcribe(&mut engine, &audio, &opts).map_err(|e| e.to_string())?;
+    let text =
+        transcriber::transcribe(engine.as_mut(), &audio, &opts).map_err(|e| e.to_string())?;
     let run = started.elapsed();
 
     println!("{text}");
     eprintln!(
-        "áudio {secs:.1} s · modelo carregado em {:.2} s · transcrito em {:.2} s ({:.1}× tempo real) · {} threads",
+        "{} ({backend:?}) · áudio {secs:.1} s · modelo carregado em {:.2} s · transcrito em {:.2} s ({:.1}× tempo real) · {} threads",
+        engine.name(),
         load.as_secs_f64(),
         run.as_secs_f64(),
         secs / run.as_secs_f64().max(f64::EPSILON),

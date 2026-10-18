@@ -6,9 +6,10 @@ use std::time::Instant;
 
 use pointspeak_core::config::AppConfig;
 use pointspeak_core::dictation::Input;
+use pointspeak_core::engine::EngineRuntime;
 use pointspeak_core::hotkey::KeyAction;
 use pointspeak_core::hud::HudState;
-use pointspeak_core::transcriber::EngineSlot;
+use pointspeak_core::transcriber::{EngineKey, EngineSlot};
 use tauri::{Manager, WindowEvent};
 use tauri_plugin_global_shortcut::ShortcutState;
 
@@ -19,6 +20,7 @@ pub mod hud;
 pub mod injector;
 pub mod models;
 pub mod onnx;
+pub mod onnx_whisper;
 pub mod settings;
 pub mod shortcut;
 pub mod transcriber;
@@ -38,6 +40,9 @@ pub struct AppState {
     pub config: Mutex<AppConfig>,
     /// Engine de transcrição carregada (no `setup`, em segundo plano, ou no primeiro ditado).
     pub transcriber: Mutex<EngineSlot>,
+    /// O que a engine carregada roda de fato (backend e fallback), fora do lock do `transcriber`
+    /// para o `engine://status` não esperar uma transcrição.
+    pub engine_runtime: Mutex<Option<(EngineKey, EngineRuntime)>>,
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -135,6 +140,7 @@ mod tests {
         let state = AppState::default();
         assert_eq!(*state.hud.lock().unwrap(), HudState::Idle);
         assert_eq!(*state.config.lock().unwrap(), AppConfig::default());
-        assert!(state.transcriber.lock().unwrap().loaded_model().is_none());
+        assert!(state.transcriber.lock().unwrap().loaded_key().is_none());
+        assert!(state.engine_runtime.lock().unwrap().is_none());
     }
 }
