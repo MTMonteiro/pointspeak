@@ -126,10 +126,31 @@ pub fn set_config(
     });
     if model_changed {
         dictation::reload_model(&app);
-    } else if backend_changed {
-        crate::settings::refresh_engine_status(&app);
+    }
+    if backend_changed {
+        backend_changed_in_background(&app, model_changed);
     }
     Ok(config)
+}
+
+/// Backend trocado: a engine é solta (o próximo ditado recarrega, a menos que o modelo também
+/// tenha mudado e o `reload_model` já esteja carregando), o `engine://status` é reemitido e a lista
+/// de modelos também, porque a variante (ggml/ONNX) pode ter mudado. Numa thread: soltar a engine
+/// espera uma transcrição em andamento e a variante pode esperar a detecção de hardware.
+fn backend_changed_in_background(app: &AppHandle, model_changed: bool) {
+    let app = app.clone();
+    let spawned = std::thread::Builder::new()
+        .name("pointspeak-backend-change".into())
+        .spawn(move || {
+            if !model_changed {
+                crate::transcriber::unload(&app);
+            }
+            crate::settings::refresh_engine_status(&app);
+            crate::models::emit_all(&app);
+        });
+    if let Err(e) = spawned {
+        eprintln!("[pointspeak] troca de backend: thread não iniciou ({e})");
+    }
 }
 
 #[cfg(test)]

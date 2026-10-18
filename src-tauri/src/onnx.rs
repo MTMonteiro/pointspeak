@@ -10,7 +10,7 @@
 //! EP (DirectML, OpenVINO, CUDA) ela confere se o runtime a traz (`is_available`) e se registra
 //! numa sessão de teste (sem modelo: o DirectML cria o dispositivo DirectX 12 aqui). O `Environment`
 //! criado fica guardado ([`environment`]): o `ort` só aceita um por processo, e o Silero VAD
-//! (`vad.rs`) cria a sessão dele nesse mesmo. A transcrição ONNX chega na próxima etapa.
+//! (`vad.rs`) e a engine Whisper ONNX (`onnx_whisper.rs`) criam as sessões nesse mesmo.
 
 use std::env;
 use std::path::{Path, PathBuf};
@@ -90,7 +90,11 @@ fn detect_onnx(resource_dir: Option<&Path>) -> OnnxRuntimeStatus {
     log::info!("ONNX Runtime carregado de {}", library.display());
     let environment = ENVIRONMENT.get_or_init(|| environment);
     let providers = [
-        probe_provider(environment, Backend::Directml, ep::DirectML::default()),
+        probe_provider(
+            environment,
+            Backend::Directml,
+            crate::onnx_whisper::directml(),
+        ),
         probe_provider(environment, Backend::Openvino, ep::OpenVINO::default()),
         probe_provider(environment, Backend::Cuda, ep::CUDA::default()),
     ];

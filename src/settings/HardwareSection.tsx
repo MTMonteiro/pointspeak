@@ -60,9 +60,12 @@ export function HardwareSection({
 
   const selectedBackend = config.backend === "auto" ? engineStatus?.backend : config.backend;
   const selectedOption = backends.find((option) => option.backend === config.backend);
-  const fallback = config.backend !== "auto" && config.backend !== "cpu" && engineStatus?.backend === "cpu";
-  const fallbackLabel = BACKEND_LABELS[config.backend === "auto" ? "cpu" : config.backend];
-  const fallbackReason = selectedOption?.reason ?? "O motor não informou a causa.";
+  const chosenFallback = config.backend !== "auto" && config.backend !== "cpu" && engineStatus?.backend === "cpu";
+  // In auto mode only the engine knows a fallback happened (e.g. DirectML did not start).
+  const autoFallback = config.backend === "auto" && engineStatus?.backend === "cpu" && Boolean(engineStatus.fallbackReason);
+  const fallback = chosenFallback || autoFallback;
+  const fallbackLabel = config.backend === "auto" ? undefined : BACKEND_LABELS[config.backend];
+  const fallbackReason = engineStatus?.fallbackReason ?? selectedOption?.reason ?? "O motor não informou a causa.";
 
   return (
     <div className="settings-hardware">
@@ -115,7 +118,7 @@ export function HardwareSection({
               tone="warning"
               action={<Button variant="ghost" onClick={() => void loadBackends()}>Tentar de novo</Button>}
             >
-              <p>A aceleração {fallbackLabel} não iniciou. O PointSpeak está usando a CPU. Motivo: {fallbackReason}</p>
+              <p>A aceleração{fallbackLabel ? ` ${fallbackLabel}` : ""} não iniciou. O PointSpeak está usando a CPU. Motivo: {fallbackReason}</p>
             </Callout>
           )}
 

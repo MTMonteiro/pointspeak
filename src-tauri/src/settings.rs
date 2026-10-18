@@ -28,23 +28,24 @@ use pointspeak_core::events::{
 };
 use pointspeak_core::hud::HudState;
 use pointspeak_core::settings::{
-    backend_options, engine_backends, engine_status, file_manager, AppFolder, BackendOption,
-    MicTestError, TargetOs, MIC_TEST_BUSY,
+    backend_options, effective_backend, engine_backends, engine_status, file_manager, AppFolder,
+    BackendOption, MicTestError, TargetOs, MIC_TEST_BUSY,
 };
+use pointspeak_core::transcriber::EngineKey;
 use tauri::{AppHandle, Emitter, Manager, Runtime, State};
 
 use crate::audio::{AudioError, AudioRecorder, RecordingHandle};
 use crate::dictation::DictationHandle;
-use crate::onnx;
+use crate::{onnx, transcriber};
 use crate::{AppState, SETTINGS_WINDOW};
 
 /// Cartões de hardware desta máquina (a detecção roda uma vez, veja `onnx::hardware`).
-fn options<R: Runtime>(app: &AppHandle<R>) -> Vec<BackendOption> {
+pub(crate) fn options<R: Runtime>(app: &AppHandle<R>) -> Vec<BackendOption> {
     backend_options(TargetOs::current(), onnx::hardware(app))
 }
 
 /// Backends com engine de transcrição neste build.
-fn engines() -> Vec<pointspeak_core::config::Backend> {
+pub(crate) fn engines() -> Vec<pointspeak_core::config::Backend> {
     engine_backends(cfg!(feature = "vulkan"))
 }
 
@@ -53,9 +54,26 @@ fn payload<R: Runtime>(
     status: ModelStatus,
     paused: bool,
 ) -> EngineStatusPayload {
-    let state = app.state::<AppState>();
-    let config = state.config.lock().unwrap_or_else(|e| e.into_inner());
-    engine_status(&config, status, paused, &options(app), &engines())
+    let config = app
+        .state::<AppState>()
+        .config
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone();
+    let (options, engines) = (options(app), engines());
+    // O backend real e o motivo do fallback valem só se a engine carregada é a deste config.
+    let runtime = config.model.and_then(|model| {
+        let backend = effective_backend(config.backend, &options, &engines);
+        transcriber::runtime(app, EngineKey { model, backend })
+    });
+    engine_status(
+        &config,
+        status,
+        paused,
+        &options,
+        &engines,
+        runtime.as_ref(),
+    )
 }
 
 /// Emite `engine://status` para a janela `settings`.
@@ -556,6 +574,7 @@ mod tests {
         let options = backend_options(TargetOs::current(), &onnx::detect(None));
         assert_eq!(options.len(), 5);
         assert!(options[4].available);
-        assert_eq!(engines()[0], pointspeak_core::config::Backend::Cpu);
+        assert!(engines().contains(&pointspeak_core::config::Backend::Cpu));
+        assert!(engines().contains(&pointspeak_core::config::Backend::Directml));
     }
 }

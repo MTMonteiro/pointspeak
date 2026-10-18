@@ -3,6 +3,7 @@
 pub mod audio;
 pub mod config;
 pub mod dictation;
+pub mod engine;
 pub mod events;
 pub mod hotkey;
 pub mod hud;

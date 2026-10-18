@@ -47,8 +47,11 @@ export const SETTINGS_MIC_TEST_ENDED = "settings://mic-test-ended";
 export type EngineStatus = {
   model: ModelId | null;
   status: "notSelected" | "loading" | "loaded" | "failed";
+  /** Backend that really runs (CPU after a fallback). */
   backend: Backend;
   paused: boolean;
+  /** Only when the engine fell back: why the chosen backend is not running (PT-BR). */
+  fallbackReason?: string;
 };
 
 export type ModelState =

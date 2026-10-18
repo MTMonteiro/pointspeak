@@ -10,6 +10,7 @@ use serde::Serialize;
 
 use crate::config::{AppConfig, Backend};
 use crate::dictation::ModelStatus;
+use crate::engine::{unavailable_fallback, EngineRuntime};
 use crate::events::EngineStatusPayload;
 
 /// Backends da seção Hardware, na ordem dos cartões (DESIGN.md §4.2). `Auto` não aparece.
@@ -85,11 +86,16 @@ impl HardwareProbe {
     }
 }
 
-/// Backends com engine de transcrição neste build: hoje o whisper.cpp na CPU e, com a feature
-/// `vulkan`, na GPU. A engine ONNX (DirectML/OpenVINO/CUDA) entra na próxima etapa da aceleração;
-/// até lá, esses backends aparecem detectados nos cartões, mas o motor usa a CPU.
+/// Backends com engine de transcrição neste build: a engine ONNX (`ort`, sempre compilada) para
+/// DirectML, OpenVINO e CUDA, o whisper.cpp na CPU e, com a feature `vulkan`, na GPU. Qual engine
+/// roda cada um: `engine::engine_kind`.
 pub fn engine_backends(vulkan: bool) -> Vec<Backend> {
-    let mut engines = vec![Backend::Cpu];
+    let mut engines = vec![
+        Backend::Directml,
+        Backend::Openvino,
+        Backend::Cuda,
+        Backend::Cpu,
+    ];
     if vulkan {
         engines.push(Backend::Vulkan);
     }
@@ -201,18 +207,32 @@ pub fn effective_backend(
 }
 
 /// Payload de `engine://status` / `get_engine_status` a partir do config e do estado do ditado.
+///
+/// Com a engine do config carregada (`runtime`), `backend` e `fallbackReason` são os dela (o que
+/// roda de fato). Sem engine carregada, `backend` é o efetivo e o motivo é só o da escolha
+/// (`engine::unavailable_fallback`).
 pub fn engine_status(
     config: &AppConfig,
     status: ModelStatus,
     paused: bool,
     options: &[BackendOption],
     engines: &[Backend],
+    runtime: Option<&EngineRuntime>,
 ) -> EngineStatusPayload {
+    let effective = effective_backend(config.backend, options, engines);
+    let (backend, fallback) = match runtime {
+        Some(runtime) => (runtime.backend, runtime.fallback.clone()),
+        None => (
+            effective,
+            unavailable_fallback(config.backend, effective, options),
+        ),
+    };
     EngineStatusPayload {
         model: config.model,
         status,
-        backend: effective_backend(config.backend, options, engines),
+        backend,
         paused,
+        fallback_reason: fallback.map(|f| f.message()),
     }
 }
 
@@ -272,6 +292,7 @@ pub fn file_manager(os: TargetOs) -> &'static str {
 mod tests {
     use super::*;
     use crate::config::ModelId;
+    use crate::engine::{EngineKind, FallbackReason};
     use serde_json::json;
 
     fn reasons(os: TargetOs, probe: &HardwareProbe) -> Vec<(Backend, Option<String>)> {
@@ -437,7 +458,7 @@ mod tests {
 
     #[test]
     fn effective_backend_needs_an_engine() {
-        let cpu = engine_backends(false);
+        let cpu = [Backend::Cpu];
         let today = backend_options(TargetOs::Windows, &HardwareProbe::cpu_only());
         for requested in [
             Backend::Auto,
@@ -447,7 +468,7 @@ mod tests {
         ] {
             assert_eq!(effective_backend(requested, &today, &cpu), Backend::Cpu);
         }
-        // DirectML detectado, mas sem engine ONNX ainda: o motor segue na CPU.
+        // DirectML detectado, mas sem engine para ele: o motor segue na CPU.
         let dml = backend_options(TargetOs::Windows, &loaded(&[(Backend::Directml, None)]));
         assert_eq!(
             effective_backend(Backend::Directml, &dml, &cpu),
@@ -469,8 +490,13 @@ mod tests {
             effective_backend(Backend::Vulkan, &gpu, &vulkan),
             Backend::Vulkan
         );
+        // Com a engine ONNX, `auto` prefere o DirectML (vem antes do Vulkan nos cartões).
         assert_eq!(
             effective_backend(Backend::Auto, &gpu, &vulkan),
+            Backend::Directml
+        );
+        assert_eq!(
+            effective_backend(Backend::Auto, &gpu, &[Backend::Vulkan, Backend::Cpu]),
             Backend::Vulkan
         );
         assert_eq!(
@@ -514,13 +540,15 @@ mod tests {
                 ModelStatus::Loaded,
                 false,
                 &options,
-                &engine_backends(false)
+                &engine_backends(false),
+                None
             ),
             EngineStatusPayload {
                 model: Some(ModelId::Base),
                 status: ModelStatus::Loaded,
                 backend: Backend::Cpu,
                 paused: false,
+                fallback_reason: Some(REASON_NOT_INCLUDED.to_string()),
             }
         );
         let none = engine_status(
@@ -529,9 +557,89 @@ mod tests {
             true,
             &options,
             &engine_backends(false),
+            None,
         );
         assert_eq!(none.model, None);
         assert!(none.paused);
+        // `auto` na CPU não é fallback.
+        assert_eq!(none.fallback_reason, None);
+    }
+
+    #[test]
+    fn onnx_backends_have_an_engine() {
+        let engines = engine_backends(false);
+        for backend in [
+            Backend::Directml,
+            Backend::Openvino,
+            Backend::Cuda,
+            Backend::Cpu,
+        ] {
+            assert!(engines.contains(&backend), "{backend:?}");
+        }
+        assert!(!engines.contains(&Backend::Vulkan));
+        assert!(engine_backends(true).contains(&Backend::Vulkan));
+        // DirectML detectado no Windows: `auto` escolhe o DirectML (primeiro cartão).
+        let dml = backend_options(TargetOs::Windows, &loaded(&[(Backend::Directml, None)]));
+        assert_eq!(
+            effective_backend(Backend::Auto, &dml, &engines),
+            Backend::Directml
+        );
+        assert_eq!(
+            effective_backend(Backend::Openvino, &dml, &engines),
+            Backend::Directml
+        );
+    }
+
+    #[test]
+    fn engine_status_reports_what_runs_and_why() {
+        let dml = backend_options(TargetOs::Windows, &loaded(&[(Backend::Directml, None)]));
+        let engines = engine_backends(false);
+        let config = AppConfig {
+            model: Some(ModelId::Base),
+            backend: Backend::Directml,
+            ..AppConfig::default()
+        };
+        let status = |runtime: Option<&EngineRuntime>| {
+            engine_status(&config, ModelStatus::Loaded, false, &dml, &engines, runtime)
+        };
+        // Antes de carregar: o efetivo, sem motivo.
+        let before = status(None);
+        assert_eq!(before.backend, Backend::Directml);
+        assert_eq!(before.fallback_reason, None);
+        // Carregado no DirectML.
+        let running = EngineRuntime {
+            backend: Backend::Directml,
+            kind: EngineKind::Onnx,
+            fallback: None,
+        };
+        assert_eq!(status(Some(&running)), before);
+        // Fallback para o whisper.cpp na CPU: backend real e o motivo.
+        let fallback = EngineRuntime {
+            backend: Backend::Cpu,
+            kind: EngineKind::WhisperCpp,
+            fallback: Some(FallbackReason::ProviderFailed {
+                backend: Backend::Directml,
+                error: "0x887A0004".into(),
+            }),
+        };
+        let after = status(Some(&fallback));
+        assert_eq!(after.backend, Backend::Cpu);
+        assert_eq!(
+            after.fallback_reason.as_deref(),
+            Some("DirectML não iniciou: 0x887A0004")
+        );
+        assert_eq!(
+            serde_json::to_value(&after).unwrap()["fallbackReason"],
+            json!("DirectML não iniciou: 0x887A0004")
+        );
+        // Sem ONNX Runtime e DirectML escolhido: o motivo do cartão.
+        let none = backend_options(TargetOs::Windows, &HardwareProbe::cpu_only());
+        let payload = engine_status(&config, ModelStatus::Loaded, false, &none, &engines, None);
+        assert_eq!(payload.backend, Backend::Cpu);
+        assert_eq!(
+            payload.fallback_reason.as_deref(),
+            Some(REASON_ORT_NOT_FOUND)
+        );
     }
 
     #[test]

@@ -1,24 +1,38 @@
-//! Engine `whisper-rs` (whisper.cpp estático) atrás do trait `Transcriber` do núcleo.
+//! Engines de transcrição do app e a escolha entre elas.
 //!
-//! O modelo é carregado uma vez ([`WhisperTranscriber::load`]) e reaproveitado entre ditados; o
-//! [`EngineSlot`] do `AppState` troca de modelo (hot-swap) liberando o contexto antigo antes.
-//! O carregamento é lazy: [`ensure_loaded`] roda no primeiro ditado (eager/lazy fica para a fase 4).
+//! - `whisper-rs` (whisper.cpp estático, [`WhisperTranscriber`]) com o modelo ggml: CPU e, com as
+//!   features `cuda`/`vulkan`, GPU.
+//! - ONNX Runtime ([`OrtWhisperTranscriber`], `onnx_whisper.rs`) com a variante ONNX: DirectML,
+//!   OpenVINO e CUDA.
+//!
+//! [`ensure_loaded`] monta o plano do config ([`plan`]: backend efetivo, variantes no disco) e
+//! carrega pela regra do núcleo (`pointspeak_core::engine::load_with_fallback`): se a ONNX não dá
+//! (variante não baixada, EP que não inicia, modelo que não abre), cai para o whisper.cpp na CPU e
+//! guarda o motivo, que o `engine://status` mostra. O [`EngineSlot`] do `AppState` guarda a engine
+//! pela chave modelo + backend efetivo e troca (hot-swap) liberando a antiga antes; o que roda de
+//! fato fica em `AppState.engine_runtime`, lido sem esperar uma transcrição em andamento.
 //! Os logs do whisper.cpp e do GGML não vão para o stdout: passam pelo `log` e só avisos e erros
 //! chegam ao stderr, com o prefixo `[pointspeak]` dos demais logs do app.
 
 use std::path::{Path, PathBuf};
 use std::sync::{MutexGuard, Once};
 
-use pointspeak_core::config::AppConfig;
+use pointspeak_core::config::{AppConfig, Backend};
+use pointspeak_core::engine::{
+    backend_label, load_with_fallback, EnginePlan, EngineRuntime, GgmlGpu, OnnxLoadError,
+};
+use pointspeak_core::models::{onnx_model_ready, ModelVariant};
 use pointspeak_core::transcriber::{
-    self, join_segments, language_code, EngineSlot, TranscribeError, TranscribeOptions, Transcriber,
+    self, join_segments, language_code, EngineKey, EngineSlot, TranscribeError, TranscribeOptions,
+    Transcriber,
 };
 use tauri::{AppHandle, Manager, Runtime};
 use whisper_rs::{
     FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters, WhisperState,
 };
 
-use crate::{models, AppState};
+use crate::onnx_whisper::OrtWhisperTranscriber;
+use crate::{models, onnx, settings, AppState};
 
 /// Teto de threads da inferência: acima disso o ganho some e o resto do sistema engasga.
 const MAX_THREADS: usize = 8;
@@ -31,14 +45,20 @@ pub struct WhisperTranscriber {
 }
 
 impl WhisperTranscriber {
-    /// Carrega o modelo `.bin`/`.gguf`. Arquivo ausente → [`TranscribeError::ModelNotFound`].
+    /// Carrega o modelo `.bin`/`.gguf` (na GPU se o build tem `cuda`/`vulkan`). Arquivo ausente →
+    /// [`TranscribeError::ModelNotFound`].
     pub fn load(model: &Path) -> Result<Self, TranscribeError> {
+        Self::load_on(model, ggml_gpu() != GgmlGpu::default())
+    }
+
+    /// Como [`WhisperTranscriber::load`], escolhendo GPU (`use_gpu`) ou só CPU (fallback).
+    pub fn load_on(model: &Path, use_gpu: bool) -> Result<Self, TranscribeError> {
         if !model.is_file() {
             return Err(TranscribeError::ModelNotFound(model.to_path_buf()));
         }
         install_logging();
         let mut params = WhisperContextParameters::default();
-        params.use_gpu(cfg!(any(feature = "cuda", feature = "vulkan")));
+        params.use_gpu(use_gpu && cfg!(any(feature = "cuda", feature = "vulkan")));
         let context = WhisperContext::new_with_params(model, params)
             .map_err(|e| TranscribeError::Load(format!("{e:?}")))?;
         let state = context
@@ -94,14 +114,11 @@ pub fn inference_threads() -> usize {
     num_cpus::get_physical().clamp(1, MAX_THREADS)
 }
 
-/// Caminho do modelo ativo em `dir`; sem modelo escolhido ou arquivo ausente vira erro.
-pub fn model_path(dir: &Path, config: &AppConfig) -> Result<PathBuf, TranscribeError> {
-    let id = config.model.ok_or(TranscribeError::NoModelSelected)?;
-    let path = dir.join(id.info().file_name);
-    if path.is_file() {
-        Ok(path)
-    } else {
-        Err(TranscribeError::ModelNotFound(path))
+/// GPU do whisper.cpp neste build (features do crate).
+pub fn ggml_gpu() -> GgmlGpu {
+    GgmlGpu {
+        cuda: cfg!(feature = "cuda"),
+        vulkan: cfg!(feature = "vulkan"),
     }
 }
 
@@ -109,20 +126,133 @@ fn slot(state: &AppState) -> MutexGuard<'_, EngineSlot> {
     state.transcriber.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-fn load_whisper(model: &Path) -> Result<Box<dyn Transcriber>, TranscribeError> {
-    Ok(Box::new(WhisperTranscriber::load(model)?))
+fn runtime_slot(state: &AppState) -> MutexGuard<'_, Option<(EngineKey, EngineRuntime)>> {
+    state
+        .engine_runtime
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
 }
 
-/// Garante a engine do modelo ativo carregada (carrega no primeiro uso; troca se o modelo mudou).
+/// Plano da engine do config: backend efetivo pela detecção (espera por ela na primeira vez) e o
+/// que existe na pasta dos modelos.
+pub fn plan<R: Runtime>(
+    app: &AppHandle<R>,
+    config: &AppConfig,
+) -> Result<(EnginePlan, PathBuf), TranscribeError> {
+    let model = config.model.ok_or(TranscribeError::NoModelSelected)?;
+    let dir = models::models_dir(app).map_err(|e| TranscribeError::Load(e.to_string()))?;
+    let plan = EnginePlan::new(
+        model,
+        config.backend,
+        &settings::options(app),
+        &settings::engines(),
+        ggml_gpu(),
+        onnx_model_ready(&dir, model),
+        ModelVariant::Ggml.local_path(model, &dir).is_file(),
+    );
+    Ok((plan, dir))
+}
+
+/// Variante do modelo que a engine do backend efetivo usa (a que o Model Manager mostra).
+pub fn model_variant<R: Runtime>(app: &AppHandle<R>, config: &AppConfig) -> ModelVariant {
+    let backend = pointspeak_core::settings::effective_backend(
+        config.backend,
+        &settings::options(app),
+        &settings::engines(),
+    );
+    pointspeak_core::engine::engine_kind(backend, ggml_gpu()).variant()
+}
+
+/// Carrega a engine do plano, com o fallback para o whisper.cpp na CPU.
+fn load_engine(
+    plan: &EnginePlan,
+    dir: &Path,
+) -> Result<(Box<dyn Transcriber>, EngineRuntime), TranscribeError> {
+    let onnx_dir = ModelVariant::Onnx.local_path(plan.model, dir);
+    let ggml = ModelVariant::Ggml.local_path(plan.model, dir);
+    let loaded = load_with_fallback(
+        plan,
+        &onnx_dir,
+        |backend| {
+            let environment = onnx::environment()
+                .ok_or_else(|| OnnxLoadError::Provider("ONNX Runtime não carregado".into()))?;
+            let engine = OrtWhisperTranscriber::load(
+                environment,
+                &onnx_dir,
+                plan.model.onnx_info(),
+                backend,
+            )
+            .inspect_err(|e| eprintln!("[pointspeak] engine ONNX ({backend:?}): {e:?}"))?;
+            Ok(Box::new(engine) as Box<dyn Transcriber>)
+        },
+        |backend| {
+            let gpu = matches!(backend, Backend::Cuda | Backend::Vulkan);
+            Ok(Box::new(WhisperTranscriber::load_on(&ggml, gpu)?) as Box<dyn Transcriber>)
+        },
+    )?;
+    let runtime = loaded.runtime;
+    // Uma linha por carga: o checklist manual confere o backend (e o fallback) por ela.
+    match &runtime.fallback {
+        Some(reason) => eprintln!(
+            "[pointspeak] transcrição: {} em {} (fallback: {})",
+            runtime.kind.name(),
+            backend_label(runtime.backend),
+            reason.message()
+        ),
+        None => eprintln!(
+            "[pointspeak] transcrição: {} em {}",
+            runtime.kind.name(),
+            backend_label(runtime.backend)
+        ),
+    }
+    Ok((loaded.engine, runtime))
+}
+
+/// Garante a engine do config no slot e roda `f` nela. O `bool` diz se a engine foi carregada
+/// agora (o backend real ou o fallback podem ter mudado).
+fn with_engine<R: Runtime, T>(
+    app: &AppHandle<R>,
+    config: &AppConfig,
+    f: impl FnOnce(&mut dyn Transcriber) -> Result<T, TranscribeError>,
+) -> Result<(T, bool), TranscribeError> {
+    let (plan, dir) = plan(app, config)?;
+    let key = plan.key();
+    let state = app.state::<AppState>();
+    let mut slot = slot(&state);
+    let mut loaded_now = false;
+    let engine = slot.ensure(key, |key| {
+        runtime_slot(&state).take();
+        let (engine, runtime) = load_engine(&plan, &dir)?;
+        *runtime_slot(&state) = Some((key, runtime));
+        loaded_now = true;
+        Ok(engine)
+    })?;
+    Ok((f(engine)?, loaded_now))
+}
+
+/// Garante a engine do modelo ativo carregada (carrega no primeiro uso; troca se o modelo ou o
+/// backend mudou).
 pub fn ensure_loaded<R: Runtime>(
     app: &AppHandle<R>,
     config: &AppConfig,
 ) -> Result<(), TranscribeError> {
-    let dir = models::models_dir(app).map_err(|e| TranscribeError::Load(e.to_string()))?;
-    let path = model_path(&dir, config)?;
-    slot(&app.state::<AppState>())
-        .ensure(&path, load_whisper)
-        .map(|_| ())
+    with_engine(app, config, |_| Ok(())).map(|_| ())
+}
+
+/// O que roda de fato, se a engine carregada é a de `key`.
+pub fn runtime<R: Runtime>(app: &AppHandle<R>, key: EngineKey) -> Option<EngineRuntime> {
+    runtime_slot(&app.state::<AppState>())
+        .as_ref()
+        .filter(|(loaded, _)| *loaded == key)
+        .map(|(_, runtime)| runtime.clone())
+}
+
+/// Solta a engine carregada (troca de backend: o próximo ditado recarrega). Espera uma
+/// transcrição em andamento terminar; chame fora da thread principal.
+pub fn unload<R: Runtime>(app: &AppHandle<R>) {
+    let state = app.state::<AppState>();
+    slot(&state).unload();
+    runtime_slot(&state).take();
 }
 
 /// Comando `load_transcriber`: carrega agora o modelo ativo (pré-carga), fora da thread principal.
@@ -141,7 +271,8 @@ pub async fn load_transcriber(app: AppHandle) -> Result<(), String> {
         .map_err(|e| e.to_string())
 }
 
-/// Transcreve áudio 16 kHz mono com o modelo e o idioma da `config` (texto já limpo).
+/// Transcreve áudio 16 kHz mono com o modelo e o idioma da `config` (texto já limpo). Se a engine
+/// foi carregada aqui (lazy), reemite o `engine://status` com o backend real.
 pub fn transcribe<R: Runtime>(
     app: &AppHandle<R>,
     config: &AppConfig,
@@ -151,12 +282,13 @@ pub fn transcribe<R: Runtime>(
     if transcriber::is_too_short(audio) {
         return Ok(String::new());
     }
-    let dir = models::models_dir(app).map_err(|e| TranscribeError::Load(e.to_string()))?;
-    let path = model_path(&dir, config)?;
-    let state = app.state::<AppState>();
-    let mut slot = slot(&state);
-    let engine = slot.ensure(&path, load_whisper)?;
-    transcriber::transcribe(engine, audio, &opts)
+    let (text, loaded_now) = with_engine(app, config, |engine| {
+        transcriber::transcribe(engine, audio, &opts)
+    })?;
+    if loaded_now {
+        settings::refresh_engine_status(app);
+    }
+    Ok(text)
 }
 
 /// Repassa avisos e erros do `log` (whisper.cpp/GGML) ao stderr.
@@ -197,37 +329,12 @@ pub fn install_logging() {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use pointspeak_core::config::ModelId;
     use pointspeak_core::events::ErrorKind;
 
     #[test]
     fn threads_are_between_one_and_eight() {
         let threads = inference_threads();
         assert!((1..=MAX_THREADS).contains(&threads));
-    }
-
-    #[test]
-    fn model_path_requires_a_selected_model() {
-        let dir = tempfile::tempdir().unwrap();
-        let err = model_path(dir.path(), &AppConfig::default()).unwrap_err();
-        assert_eq!(err, TranscribeError::NoModelSelected);
-        assert_eq!(err.kind(), ErrorKind::ModelNotFound);
-    }
-
-    #[test]
-    fn model_path_reports_missing_file() {
-        let dir = tempfile::tempdir().unwrap();
-        let config = AppConfig {
-            model: Some(ModelId::Tiny),
-            ..AppConfig::default()
-        };
-        let expected = dir.path().join("ggml-tiny.bin");
-        assert_eq!(
-            model_path(dir.path(), &config),
-            Err(TranscribeError::ModelNotFound(expected.clone()))
-        );
-        std::fs::write(&expected, b"x").unwrap();
-        assert_eq!(model_path(dir.path(), &config), Ok(expected));
     }
 
     #[test]
