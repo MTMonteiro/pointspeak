@@ -4,12 +4,12 @@
 //! futura engine `ort` (fase 6) implementam o mesmo contrato. Quem chama usa [`transcribe`], que
 //! descarta áudio curto demais sem chamar a engine e limpa o texto devolvido.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use thiserror::Error;
 
 use crate::audio::TARGET_SAMPLE_RATE;
-use crate::config::{AppConfig, Language};
+use crate::config::{AppConfig, Backend, Language, ModelId};
 use crate::events::ErrorKind;
 
 /// Áudio mais curto que isso (300 ms) vira texto vazio sem chamar a engine.
@@ -180,31 +180,40 @@ fn collapse_spaces(text: &str) -> String {
     out
 }
 
-/// Engine carregada no app, trocada quando o modelo muda (hot-swap).
+/// O que identifica a engine carregada: o modelo e o backend efetivo escolhido. É o pedido, não
+/// o que rodou depois de um fallback (`engine::load_with_fallback`): assim um fallback não tenta
+/// de novo a cada ditado.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct EngineKey {
+    pub model: ModelId,
+    pub backend: Backend,
+}
+
+/// Engine carregada no app, trocada quando o modelo ou o backend muda (hot-swap).
 #[derive(Default)]
 pub struct EngineSlot {
     engine: Option<Box<dyn Transcriber>>,
-    model: Option<PathBuf>,
+    key: Option<EngineKey>,
 }
 
 impl EngineSlot {
-    /// Caminho do modelo carregado, se houver.
-    pub fn loaded_model(&self) -> Option<&Path> {
-        self.model.as_deref()
+    /// Chave da engine carregada, se houver.
+    pub fn loaded_key(&self) -> Option<EngineKey> {
+        self.key
     }
 
-    /// Garante a engine do `model`: reaproveita a carregada ou libera a antiga e chama `load`.
+    /// Garante a engine de `key`: reaproveita a carregada ou libera a antiga e chama `load`.
     /// Se `load` falhar, o slot fica vazio.
     pub fn ensure(
         &mut self,
-        model: &Path,
-        load: impl FnOnce(&Path) -> Result<Box<dyn Transcriber>, TranscribeError>,
+        key: EngineKey,
+        load: impl FnOnce(EngineKey) -> Result<Box<dyn Transcriber>, TranscribeError>,
     ) -> Result<&mut dyn Transcriber, TranscribeError> {
-        if self.engine.is_none() || self.model.as_deref() != Some(model) {
+        if self.engine.is_none() || self.key != Some(key) {
             // Solta o contexto antigo antes de carregar o novo: dois modelos grandes não cabem.
             self.unload();
-            self.engine = Some(load(model)?);
-            self.model = Some(model.to_path_buf());
+            self.engine = Some(load(key)?);
+            self.key = Some(key);
         }
         Ok(self
             .engine
@@ -223,7 +232,7 @@ impl EngineSlot {
     /// Libera a engine (e a memória do modelo).
     pub fn unload(&mut self) {
         self.engine = None;
-        self.model = None;
+        self.key = None;
     }
 }
 
@@ -408,32 +417,39 @@ mod tests {
         );
     }
 
+    const TINY: EngineKey = EngineKey {
+        model: ModelId::Tiny,
+        backend: Backend::Cpu,
+    };
+    const BASE: EngineKey = EngineKey {
+        model: ModelId::Base,
+        backend: Backend::Cpu,
+    };
+
     #[test]
     fn engine_slot_loads_once_and_reuses() {
         let mut slot = EngineSlot::default();
         let mut loads = 0;
         for _ in 0..3 {
-            slot.ensure(Path::new("/m/tiny.bin"), |_| {
+            slot.ensure(TINY, |_| {
                 loads += 1;
                 Ok(Box::new(FakeTranscriber::replying("oi")))
             })
             .unwrap();
         }
         assert_eq!(loads, 1);
-        assert_eq!(slot.loaded_model(), Some(Path::new("/m/tiny.bin")));
+        assert_eq!(slot.loaded_key(), Some(TINY));
         assert_eq!(slot.engine().unwrap().name(), "fake");
     }
 
     #[test]
     fn engine_slot_swaps_model_and_drops_old_engine_first() {
         let mut slot = EngineSlot::default();
-        slot.ensure(Path::new("/m/tiny.bin"), |_| {
-            Ok(Box::new(FakeTranscriber::replying("tiny")))
-        })
-        .unwrap();
+        slot.ensure(TINY, |_| Ok(Box::new(FakeTranscriber::replying("tiny"))))
+            .unwrap();
         let engine = slot
-            .ensure(Path::new("/m/base.bin"), |path| {
-                assert_eq!(path, Path::new("/m/base.bin"));
+            .ensure(BASE, |key| {
+                assert_eq!(key, BASE);
                 Ok(Box::new(FakeTranscriber::replying("base")))
             })
             .unwrap();
@@ -441,30 +457,44 @@ mod tests {
             .transcribe(&[0.0; 4_800], &TranscribeOptions::default())
             .unwrap();
         assert_eq!(text, "base");
-        assert_eq!(slot.loaded_model(), Some(Path::new("/m/base.bin")));
+        assert_eq!(slot.loaded_key(), Some(BASE));
+    }
+
+    #[test]
+    fn engine_slot_reloads_when_the_backend_changes() {
+        let mut slot = EngineSlot::default();
+        let mut loads = Vec::new();
+        let directml = EngineKey {
+            backend: Backend::Directml,
+            ..TINY
+        };
+        for key in [TINY, directml, directml, TINY] {
+            slot.ensure(key, |key| {
+                loads.push(key.backend);
+                Ok(Box::new(FakeTranscriber::replying("oi")))
+            })
+            .unwrap();
+        }
+        assert_eq!(loads, [Backend::Cpu, Backend::Directml, Backend::Cpu]);
     }
 
     #[test]
     fn engine_slot_stays_empty_when_load_fails() {
         let mut slot = EngineSlot::default();
-        slot.ensure(Path::new("/m/tiny.bin"), |_| {
-            Ok(Box::new(FakeTranscriber::replying("tiny")))
-        })
-        .unwrap();
+        slot.ensure(TINY, |_| Ok(Box::new(FakeTranscriber::replying("tiny"))))
+            .unwrap();
         let err = slot
-            .ensure(Path::new("/m/missing.bin"), |p| {
-                Err(TranscribeError::ModelNotFound(p.to_path_buf()))
+            .ensure(BASE, |_| {
+                Err(TranscribeError::ModelNotFound("/m/ggml-base.bin".into()))
             })
             .err()
             .unwrap();
         assert_eq!(err.kind(), ErrorKind::ModelNotFound);
-        assert!(slot.loaded_model().is_none());
+        assert!(slot.loaded_key().is_none());
         assert!(slot.engine().is_none());
 
-        slot.ensure(Path::new("/m/tiny.bin"), |_| {
-            Ok(Box::new(FakeTranscriber::replying("tiny")))
-        })
-        .unwrap();
+        slot.ensure(TINY, |_| Ok(Box::new(FakeTranscriber::replying("tiny"))))
+            .unwrap();
         slot.unload();
         assert!(slot.engine().is_none());
     }

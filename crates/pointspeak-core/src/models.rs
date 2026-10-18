@@ -132,6 +132,31 @@ impl ModelVariant {
             ModelVariant::Onnx => id.onnx_info().size_bytes(),
         }
     }
+
+    /// Linha do catálogo no formato do `list_models` (o contrato JSON é o mesmo nas duas
+    /// variantes). ONNX: `fileName` = pasta do modelo, `sizeBytes` = soma dos arquivos, `sha256`
+    /// vazio (são quatro arquivos; os hashes ficam no [`ONNX_CATALOG`]) e o `displaySize` do ggml,
+    /// porque as duas variantes diferem menos de 1 % no tamanho.
+    pub fn entry_info(self, id: ModelId) -> ModelInfo {
+        let ggml = *id.info();
+        match self {
+            ModelVariant::Ggml => ggml,
+            ModelVariant::Onnx => ModelInfo {
+                file_name: id.onnx_info().dir_name,
+                size_bytes: self.size_bytes(id),
+                sha256: "",
+                ..ggml
+            },
+        }
+    }
+
+    /// Modelos desta variante prontos em `dir` ([`scan_dir`] ou [`scan_onnx_dir`]).
+    pub fn scan(self, dir: &Path) -> HashSet<ModelId> {
+        match self {
+            ModelVariant::Ggml => scan_dir(dir),
+            ModelVariant::Onnx => scan_onnx_dir(dir),
+        }
+    }
 }
 
 /// Servidor dos exports ONNX (Hugging Face).
@@ -627,16 +652,20 @@ pub fn scan_dir(dir: &Path) -> HashSet<ModelId> {
 pub fn scan_onnx_dir(dir: &Path) -> HashSet<ModelId> {
     ONNX_CATALOG
         .iter()
-        .filter(|m| {
-            let model_dir = dir.join(m.dir_name);
-            m.files().iter().all(|f| {
-                fs::metadata(model_dir.join(f.file_name()))
-                    .map(|meta| meta.is_file() && meta.len() == f.size_bytes)
-                    .unwrap_or(false)
-            })
-        })
+        .filter(|m| onnx_model_ready(dir, m.id))
         .map(|m| m.id)
         .collect()
+}
+
+/// A pasta ONNX de `id` em `dir` tem todos os arquivos no tamanho do catálogo.
+pub fn onnx_model_ready(dir: &Path, id: ModelId) -> bool {
+    let info = id.onnx_info();
+    let model_dir = dir.join(info.dir_name);
+    info.files().iter().all(|f| {
+        fs::metadata(model_dir.join(f.file_name()))
+            .map(|meta| meta.is_file() && meta.len() == f.size_bytes)
+            .unwrap_or(false)
+    })
 }
 
 /// Recusa de uma ação do Model Manager, com a mensagem para a interface.
@@ -656,18 +685,32 @@ pub enum ModelError {
     NotReady,
 }
 
-/// Estado do Model Manager: quais arquivos estão prontos e o que está baixando ou falhou.
-/// O modelo ativo vem de fora (`AppConfig.model`), para não haver duas fontes da verdade.
+/// Estado do Model Manager de uma variante (ggml ou ONNX): quais modelos estão prontos e o que
+/// está baixando ou falhou. O modelo ativo vem de fora (`AppConfig.model`), para não haver duas
+/// fontes da verdade. Tamanhos, progresso e catálogo são os da variante.
 #[derive(Debug, Clone, Default)]
 pub struct ModelRegistry {
+    variant: ModelVariant,
     ready: HashSet<ModelId>,
     /// `Downloading`, `Verifying` ou `Failed` de cada modelo (some quando termina bem).
     transient: HashMap<ModelId, ModelState>,
 }
 
 impl ModelRegistry {
-    /// Troca o conjunto de arquivos prontos (resultado de [`scan_dir`]). Modelo baixando continua
-    /// baixando; falha de um modelo que agora existe no disco é esquecida.
+    /// Registro vazio da variante.
+    pub fn new(variant: ModelVariant) -> Self {
+        Self {
+            variant,
+            ..Self::default()
+        }
+    }
+
+    pub fn variant(&self) -> ModelVariant {
+        self.variant
+    }
+
+    /// Troca o conjunto de modelos prontos (resultado de [`ModelVariant::scan`]). Modelo baixando
+    /// continua baixando; falha de um modelo que agora existe no disco é esquecida.
     pub fn apply_scan(&mut self, ready: HashSet<ModelId>) {
         self.transient
             .retain(|id, state| state.is_busy() || !ready.contains(id));
@@ -694,7 +737,10 @@ impl ModelRegistry {
 
     /// Bytes ocupados pelos modelos prontos.
     pub fn used_bytes(&self) -> u64 {
-        self.ready.iter().map(|id| id.info().size_bytes).sum()
+        self.ready
+            .iter()
+            .map(|&id| self.variant.size_bytes(id))
+            .sum()
     }
 
     /// Marca o início de um download (um por vez por modelo).
@@ -709,7 +755,7 @@ impl ModelRegistry {
             id,
             ModelState::Downloading {
                 done: 0,
-                total: id.info().size_bytes,
+                total: self.variant.size_bytes(id),
             },
         );
         Ok(())
@@ -778,7 +824,7 @@ impl ModelRegistry {
             models: CATALOG
                 .iter()
                 .map(|info| ModelEntry {
-                    info: *info,
+                    info: self.variant.entry_info(info.id),
                     recommended: info.id == RECOMMENDED_MODEL,
                     status: self.state(info.id, active),
                 })
@@ -1614,6 +1660,88 @@ mod tests {
         assert_eq!(value["models"][2]["state"], "downloading");
         assert_eq!(value["models"][2]["done"], 10);
         assert_eq!(value["models"][2]["total"], 20);
+    }
+
+    #[test]
+    fn onnx_overview_keeps_the_contract_with_variant_values() {
+        let mut r = ModelRegistry::new(ModelVariant::Onnx);
+        assert_eq!(r.variant(), ModelVariant::Onnx);
+        r.apply_scan(HashSet::from([ModelId::Tiny]));
+        r.begin_download(ModelId::Base).unwrap();
+        // O total do download é a soma dos 4 arquivos.
+        assert_eq!(
+            r.state(ModelId::Base, None),
+            ModelState::Downloading {
+                done: 0,
+                total: 147_131_618
+            }
+        );
+        assert_eq!(r.used_bytes(), 77_184_276);
+        let value =
+            serde_json::to_value(r.overview(Some(ModelId::Tiny), "/m".to_string())).unwrap();
+        assert_eq!(value["usedBytes"], 77_184_276);
+        assert_eq!(
+            value["models"][0],
+            json!({
+                "id": "tiny",
+                "fileName": "onnx-tiny",
+                "sizeBytes": 77_184_276,
+                "sha256": "",
+                "displaySize": "75 MB",
+                "description": "Mais rápido, menos preciso",
+                "recommended": false,
+                "state": "active"
+            })
+        );
+        // Mesmas chaves do ggml: o contrato não muda.
+        let ggml = serde_json::to_value(ModelRegistry::default().overview(None, "/m".to_string()))
+            .unwrap();
+        let keys = |v: &serde_json::Value| {
+            let mut k: Vec<String> = v.as_object().unwrap().keys().cloned().collect();
+            k.sort();
+            k
+        };
+        assert_eq!(keys(&value["models"][3]), keys(&ggml["models"][3]));
+        assert_eq!(value["models"][1]["state"], "downloading");
+    }
+
+    #[test]
+    fn onnx_display_size_matches_ggml_within_one_percent() {
+        for info in CATALOG {
+            let onnx = ModelVariant::Onnx.size_bytes(info.id) as f64;
+            let ggml = info.size_bytes as f64;
+            assert!(((onnx - ggml) / ggml).abs() < 0.01, "{:?}", info.id);
+            assert_eq!(
+                ModelVariant::Onnx.entry_info(info.id).display_size,
+                info.display_size
+            );
+        }
+        assert_eq!(
+            ModelVariant::Ggml.entry_info(ModelId::Small),
+            *ModelId::Small.info()
+        );
+    }
+
+    #[test]
+    fn variant_scan_reads_the_right_layout() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(ModelVariant::Ggml.scan(dir.path()).is_empty());
+        assert!(ModelVariant::Onnx.scan(dir.path()).is_empty());
+        assert!(!onnx_model_ready(dir.path(), ModelId::Tiny));
+        let tiny = ModelId::Tiny.onnx_info();
+        let model_dir = dir.path().join(tiny.dir_name);
+        fs::create_dir_all(&model_dir).unwrap();
+        for f in tiny.files() {
+            let file = File::create(model_dir.join(f.file_name())).unwrap();
+            file.set_len(f.size_bytes).unwrap();
+        }
+        assert!(onnx_model_ready(dir.path(), ModelId::Tiny));
+        assert_eq!(
+            ModelVariant::Onnx.scan(dir.path()),
+            HashSet::from([ModelId::Tiny])
+        );
+        // A pasta ONNX não conta para o ggml.
+        assert!(ModelVariant::Ggml.scan(dir.path()).is_empty());
     }
 
     #[test]

@@ -179,13 +179,18 @@ impl ModelProgressPayload {
 }
 
 /// Payload de `engine://status` (e resposta do `get_engine_status`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct EngineStatusPayload {
     pub model: Option<ModelId>,
     pub status: ModelStatus,
+    /// Backend que roda de fato (CPU depois de um fallback).
     pub backend: Backend,
     pub paused: bool,
+    /// Só com fallback: por que o backend escolhido não roda (PT-BR curto, ex.: `DirectML não
+    /// iniciou: …`, `Modelo base para ONNX não baixado`). Veja `engine::FallbackReason`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fallback_reason: Option<String>,
 }
 
 /// Por que o teste de microfone parou sozinho.
@@ -244,16 +249,33 @@ mod tests {
             status: ModelStatus::Loaded,
             backend: Backend::Cpu,
             paused: false,
+            fallback_reason: None,
+        };
+        // Sem fallback, `fallbackReason` não aparece.
+        assert_eq!(
+            serde_json::to_value(&loaded).unwrap(),
+            json!({ "model": "large-v3-turbo", "status": "loaded", "backend": "cpu", "paused": false })
+        );
+        let fallback = EngineStatusPayload {
+            fallback_reason: Some("Modelo large-v3-turbo para ONNX não baixado".into()),
+            ..loaded
         };
         assert_eq!(
-            serde_json::to_value(loaded).unwrap(),
-            json!({ "model": "large-v3-turbo", "status": "loaded", "backend": "cpu", "paused": false })
+            serde_json::to_value(fallback).unwrap(),
+            json!({
+                "model": "large-v3-turbo",
+                "status": "loaded",
+                "backend": "cpu",
+                "paused": false,
+                "fallbackReason": "Modelo large-v3-turbo para ONNX não baixado"
+            })
         );
         let none = EngineStatusPayload {
             model: None,
             status: ModelStatus::NotSelected,
             backend: Backend::Cpu,
             paused: true,
+            fallback_reason: None,
         };
         assert_eq!(
             serde_json::to_value(none).unwrap(),
