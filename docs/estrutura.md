@@ -22,9 +22,11 @@ Onde fica cada coisa (atualize quando criar ou mover pastas).
 - `tsconfig.json`, `eslint.config.js`: TypeScript strict e ESLint
 - `src/`: frontend React
   - `src/hud/`: janela do HUD (`HudOverlay.tsx`, pílula e estados; `hud.css`, estilos/animações; `HudOverlay.test.tsx`, testes de eventos, barras e timers)
-  - `src/lib/contract.ts`: nomes dos eventos do HUD e tipos dos payloads compartilhados com o backend
-  - `src/settings/`: janela de configurações (`Settings.tsx`, placeholder)
-  - `src/test/`: setup do Vitest e mock de `@tauri-apps/api`
+  - `src/lib/contract.ts`: nomes dos eventos e tipos dos payloads compartilhados com o backend (HUD e Configurações)
+  - `src/settings/`: janela de Configurações (`Settings.tsx`, layout/seleção de seção; `Settings.css`; `useConfig.ts` para carregar e salvar `AppConfig`)
+    - `src/settings/components/`: componentes base acessíveis (Button, Select, RadioCard, Segmented, Switch, Progress, LevelMeter, Callout, Badge, KeyCap e Skeleton)
+    - `Settings.test.tsx` e `components/components.test.tsx`: testes de integração da janela e dos componentes base
+  - `src/test/`: setup do Vitest e mock de eventos e comandos de `@tauri-apps/api`
   - `src/styles.css`: entrada do Tailwind e tokens visuais compartilhados (temas claro/escuro)
 - `Cargo.toml`, `Cargo.lock`, `rust-toolchain.toml`: workspace Cargo (`src-tauri` e `crates/pointspeak-core`)
 - `crates/pointspeak-core/`: núcleo em Rust puro, testável sem sistema
