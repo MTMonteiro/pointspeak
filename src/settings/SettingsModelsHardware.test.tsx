@@ -28,7 +28,12 @@ const CONFIG: TestConfig = {
 };
 
 const MICROPHONES = [{ name: "Microfone padrão", isDefault: true }];
-const ENGINE = { model: "base", status: "loaded", backend: "cpu", paused: false };
+const ENGINE: { model: string; status: string; backend: string; paused: boolean; fallbackReason?: string } = {
+  model: "base",
+  status: "loaded",
+  backend: "cpu",
+  paused: false,
+};
 const MODEL_BASE = {
   id: "base",
   fileName: "ggml-base.bin",
@@ -260,6 +265,26 @@ describe("seção Hardware", () => {
     mockTauri({ config: { backend: "vulkan" } });
     await openSection("Hardware");
     expect(await screen.findByText(/O PointSpeak está usando a CPU/)).toBeInTheDocument();
+  });
+
+  it("usa o motivo do motor (fallbackReason) no aviso de fallback", async () => {
+    mockTauri({
+      config: { backend: "vulkan" },
+      engine: { ...ENGINE, fallbackReason: "Vulkan não carregou o modelo ONNX: erro" },
+    });
+    await openSection("Hardware");
+    expect(await screen.findByText(
+      "A aceleração Vulkan (GPU) não iniciou. O PointSpeak está usando a CPU. Motivo: Vulkan não carregou o modelo ONNX: erro",
+    )).toBeInTheDocument();
+  });
+
+  it("mostra o fallback no modo automático só quando o motor informa o motivo", async () => {
+    await openSection("Hardware");
+    expect(screen.queryByText(/O PointSpeak está usando a CPU/)).not.toBeInTheDocument();
+    act(() => emitTauriEvent("engine://status", { ...ENGINE, fallbackReason: "DirectML não iniciou: 0x887A0004" }));
+    expect(await screen.findByText(
+      "A aceleração não iniciou. O PointSpeak está usando a CPU. Motivo: DirectML não iniciou: 0x887A0004",
+    )).toBeInTheDocument();
   });
 
   it("salva o backend escolhido com set_config", async () => {
