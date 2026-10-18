@@ -1,12 +1,14 @@
 #!/usr/bin/env bash
 # Prepara este Linux (Debian/Ubuntu) para gerar o instalador Windows (.exe NSIS)
 # por compilação cruzada, como documentado pelo Tauri v2: cargo-xwin + target
-# x86_64-pc-windows-msvc + NSIS + lld/llvm.
+# x86_64-pc-windows-msvc + NSIS + lld/llvm (+ ninja: o cargo-xwin usa o gerador Ninja no cmake do whisper.cpp).
 # Idempotente: só instala o que falta. Rode antes uma vez o ./scripts/setup-linux.sh.
 set -euo pipefail
 
 TARGET=x86_64-pc-windows-msvc
-PACKAGES=(nsis lld llvm clang)
+# clang-19: a STL do MSVC baixada pelo xwin exige Clang >= 19 (erro STL1000) para compilar o
+# whisper.cpp (C++); o clang 18 do Ubuntu 24.04 não serve. O build-windows.sh usa /usr/lib/llvm-19/bin.
+PACKAGES=(nsis lld llvm clang clang-19 ninja-build)
 
 if ! command -v apt-get >/dev/null 2>&1; then
   echo "setup-windows-cross.sh: apt-get não encontrado; este script cobre só Debian/Ubuntu." >&2

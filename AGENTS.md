@@ -22,7 +22,8 @@ o que um agente ou uma pessoa precisa para trabalhar aqui fica neste repositóri
   6. `cargo clippy --workspace --all-targets -- -D warnings`
   7. `cargo test --workspace`
 - Binário Linux: `cargo build -p pointspeak` (gera `target/debug/pointspeak`). O build Windows (.exe NSIS) não entra nos checks.
-- Instalador Windows (compilação cruzada, neste Linux): `./scripts/setup-windows-cross.sh` (uma vez; nsis, lld, llvm, clang, target `x86_64-pc-windows-msvc`, cargo-xwin) e `./scripts/build-windows.sh`. Sai em `target/x86_64-pc-windows-msvc/release/bundle/nsis/PointSpeak_<versão>_x64-setup.exe`. Sem assinatura (SmartScreen avisa); WebView2 via bootstrapper embutido. Detalhes e limitações em `docs/tecnologia.md`.
+- Transcrever um WAV sem abrir o app: `cargo run -p pointspeak --release --example transcribe -- <modelo.bin> <audio.wav> [pt|en|auto]`. Modelos e WAVs de teste ficam fora do repositório (ou em `target/`); nenhum teste dos checks usa modelo.
+- Instalador Windows (compilação cruzada, neste Linux): `./scripts/setup-windows-cross.sh` (uma vez; nsis, lld, llvm, clang, ninja, target `x86_64-pc-windows-msvc`, cargo-xwin) e `./scripts/build-windows.sh`. Sai em `target/x86_64-pc-windows-msvc/release/bundle/nsis/PointSpeak_<versão>_x64-setup.exe`. Sem assinatura (SmartScreen avisa); WebView2 via bootstrapper embutido. Detalhes e limitações em `docs/tecnologia.md`.
 - Código Windows-only fica atrás de `cfg(windows)` e não pode quebrar os checks Linux. Fase que adicionar dependência nativa (whisper-rs, ort) roda o `build-windows.sh` antes de entregar.
 - Nenhum teste pode depender de tela, microfone ou rede; lógica pura vai em `crates/pointspeak-core`.
 - Design e UI: o visual segue `docs/design/` (DESIGN.md e telas); a persona `designer` mantém essa pasta.
