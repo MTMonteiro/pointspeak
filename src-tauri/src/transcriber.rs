@@ -125,6 +125,22 @@ pub fn ensure_loaded<R: Runtime>(
         .map(|_| ())
 }
 
+/// Comando `load_transcriber`: carrega agora o modelo ativo (pré-carga), fora da thread principal.
+/// Devolve o erro em PT-BR (ex.: "Modelo não encontrado: …").
+#[tauri::command]
+pub async fn load_transcriber(app: AppHandle) -> Result<(), String> {
+    let config = app
+        .state::<AppState>()
+        .config
+        .lock()
+        .map(|config| config.clone())
+        .map_err(|_| "Configurações indisponíveis no momento.".to_string())?;
+    tauri::async_runtime::spawn_blocking(move || ensure_loaded(&app, &config))
+        .await
+        .map_err(|_| "O carregamento do modelo terminou inesperadamente.".to_string())?
+        .map_err(|e| e.to_string())
+}
+
 /// Transcreve áudio 16 kHz mono com o modelo e o idioma da `config` (texto já limpo).
 pub fn transcribe<R: Runtime>(
     app: &AppHandle<R>,

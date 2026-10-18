@@ -43,7 +43,8 @@ pub fn run() {
             models::download_model,
             models::list_models,
             models::remove_model,
-            models::set_active_model
+            models::set_active_model,
+            transcriber::load_transcriber
         ])
         .setup(|app| {
             config::init(app.handle())?;
