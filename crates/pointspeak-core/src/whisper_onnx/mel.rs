@@ -177,22 +177,10 @@ pub fn mel_filters(n_mels: usize) -> Vec<f32> {
 mod tests {
     use super::*;
 
-    /// Sinal de teste reproduzível em qualquer linguagem: 2 s de dois senos, uma varredura de
-    /// 100 Hz a 7 kHz e um ruído inteiro (o mesmo script em Python gerou as referências).
+    /// Sinal de teste reproduzível em qualquer linguagem (o mesmo script em Python gerou as
+    /// referências): o da verificação de sanidade.
     pub(crate) fn test_signal() -> Vec<f32> {
-        let sr = f64::from(TARGET_SAMPLE_RATE);
-        (0..2 * TARGET_SAMPLE_RATE as usize)
-            .map(|n| {
-                let t = n as f64 / sr;
-                let tau = 2.0 * std::f64::consts::PI;
-                let chirp = (tau * (100.0 * t + 0.5 * 3450.0 * t * t)).sin();
-                let noise = ((n * 7919) % 1000) as f64 / 1000.0 - 0.5;
-                (0.3 * (tau * 440.0 * t).sin()
-                    + 0.2 * (tau * 1250.0 * t).sin()
-                    + 0.2 * chirp
-                    + 0.05 * noise) as f32
-            })
-            .collect()
+        crate::whisper_onnx::sanity::probe_signal()
     }
 
     fn close(actual: f64, expected: f64, tol: f64) -> bool {

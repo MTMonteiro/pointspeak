@@ -5,9 +5,12 @@
 //! Fluxo de um ditado ([`transcribe_chunks`]): o áudio é cortado em trechos de 30 s, cada
 //! trecho vira log-mel, o encoder roda uma vez por trecho e o decoder gera os tokens até o
 //! `<|endoftext|>`; os textos passam pelo [`join_segments`].
+//!
+//! Na carga num dispositivo acelerado, [`sanity`] compara o modelo com a CPU numa entrada fixa.
 
 pub mod decoder;
 pub mod mel;
+pub mod sanity;
 pub mod tokenizer;
 
 use crate::config::Language;
