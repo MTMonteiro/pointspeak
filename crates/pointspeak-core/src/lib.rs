@@ -5,5 +5,6 @@ pub mod config;
 pub mod events;
 pub mod hotkey;
 pub mod hud;
+pub mod hud_layout;
 pub mod models;
 pub mod transcriber;
