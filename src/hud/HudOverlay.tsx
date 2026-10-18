@@ -214,6 +214,7 @@ export function HudPill({
       role="status"
       style={style}
     >
+      <span className="sr-only">{accessibleLabel}</span>
       <div aria-hidden="true" className={`hud-pill${state === "error" ? " hud-error-pill" : ""}`} data-state={state}>
         <div className="hud-content" key={state}>
           {state === "recording" && (

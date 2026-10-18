@@ -63,15 +63,17 @@ describe("HudOverlay", () => {
   });
 
   it.each([
-    ["recording", "Gravando"],
-    ["transcribing", "Transcrevendo..."],
-    ["success", "Texto colado"],
-  ] as const)("renderiza %s com seu texto", async (state, text) => {
+    ["recording", "Gravando", "Gravando"],
+    ["transcribing", "Transcrevendo...", "Transcrevendo"],
+    ["success", "Texto colado", "Texto colado"],
+  ] as const)("renderiza %s com seu texto", async (state, visibleText, accessibleText) => {
     await renderHud();
     await sendState({ state });
     expect(pill()).toHaveAttribute("data-state", state);
     expect(pill()).toHaveAttribute("aria-live", "polite");
-    expect(pill()).toHaveTextContent(text);
+    expect(pill()).toHaveTextContent(visibleText);
+    const status = screen.getByRole("status", { name: accessibleText });
+    expect(within(status).getByText(accessibleText, { selector: ".sr-only" })).toBeInTheDocument();
   });
 
   it.each(errors)("mostra a mensagem de erro %s com seu rótulo completo", async (message, label) => {
@@ -81,6 +83,8 @@ describe("HudOverlay", () => {
     expect(pill()).toHaveTextContent(message);
     expect(pill()).toHaveAttribute("aria-label", label);
     expect(within(pill()).getByTestId("error-message")).toHaveClass("hud-text");
+    const status = screen.getByRole("status", { name: label });
+    expect(within(status).getByText(label, { selector: ".sr-only" })).toBeInTheDocument();
   });
 
   it("mantém a âncora anterior quando o payload seguinte não traz uma", async () => {
@@ -145,6 +149,29 @@ describe("HudOverlay", () => {
     expect(screen.getByRole("status")).toBeInTheDocument();
     await sendState({ state: "idle" });
     expect(screen.queryByRole("status")).not.toBeInTheDocument();
+  });
+
+  it("mantém o sucesso reduced-motion dentro dos 400 ms do backend", async () => {
+    vi.useFakeTimers();
+    Object.defineProperty(window, "matchMedia", {
+      configurable: true,
+      value: vi.fn().mockReturnValue({
+        matches: true,
+        media: "(prefers-reduced-motion: reduce)",
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+      }),
+    });
+    await renderHud();
+    await sendState({ state: "success" });
+
+    const status = screen.getByRole("status", { name: "Texto colado" });
+    expect(status).toHaveAttribute("data-reduced-motion", "true");
+    const delayMs = Number.parseFloat(status.style.getPropertyValue("--hud-leave-delay"));
+    const durationMs = Number.parseFloat(status.style.getPropertyValue("--hud-leave-duration"));
+    expect(delayMs).toBe(280);
+    expect(durationMs).toBe(120);
+    expect(delayMs + durationMs).toBeLessThanOrEqual(400);
   });
 
   it.each(errors)("só inicia o fade de %s após o tempo visível do backend", async (message, _label, visibleMs) => {
