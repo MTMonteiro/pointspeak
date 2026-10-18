@@ -26,6 +26,7 @@ Onde fica cada coisa (atualize quando criar ou mover pastas).
   - `src/styles.css`: entrada do Tailwind
 - `Cargo.toml`, `Cargo.lock`, `rust-toolchain.toml`: workspace Cargo (`src-tauri` e `crates/pointspeak-core`)
 - `crates/pointspeak-core/`: núcleo em Rust puro, testável sem sistema
+  - `src/audio.rs`: pipeline de áudio puro (downmix, resample 16 kHz com `rubato`, RMS/`level`, `SilenceDetector`, `RecordingBuffer`, `CapturePipeline`) e `MicrophoneInfo`
   - `src/config.rs`: `AppConfig` (padrões, serde camelCase, `validate()`/`sanitized()`) e `ModelId`
   - `src/events.rs`: nomes e payloads dos eventos `hud://state-changed` e `hud://audio-level`; `ErrorKind` com as mensagens do HUD
   - `src/hotkey.rs`: `HotkeyController` (Push-to-Talk/Toggle, autorepeat, gravação curta) e parser de acelerador (`Alt+Z`)
@@ -34,4 +35,4 @@ Onde fica cada coisa (atualize quando criar ou mover pastas).
   - `tauri.conf.json`: identificador, janelas `settings` e `hud`, bundle (nsis, deb, appimage; WebView2 `embedBootstrapper` no Windows)
   - `capabilities/`: permissões das janelas
   - `icons/`: ícones gerados por `npx tauri icon src-tauri/app-icon.png -o src-tauri/icons`
-  - `src/lib.rs`: montagem do app (plugins, estado, janelas, comandos); `src/config.rs`: `config.json` e comandos `get_config`/`set_config`; `src/tray.rs`: bandeja; `src/main.rs`: ponto de entrada
+  - `src/lib.rs`: montagem do app (plugins, estado, janelas, comandos); `src/audio.rs`: captura do microfone com `cpal` (`AudioRecorder`, `RecordingHandle`) e comando `list_microphones`; `src/config.rs`: `config.json` e comandos `get_config`/`set_config`; `src/tray.rs`: bandeja; `src/main.rs`: ponto de entrada

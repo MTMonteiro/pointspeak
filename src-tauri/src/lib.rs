@@ -7,6 +7,7 @@ use pointspeak_core::config::AppConfig;
 use pointspeak_core::hud::HudMachine;
 use tauri::WindowEvent;
 
+pub mod audio;
 mod config;
 mod tray;
 
@@ -29,6 +30,7 @@ pub fn run() {
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .manage(AppState::default())
         .invoke_handler(tauri::generate_handler![
+            audio::list_microphones,
             config::get_config,
             config::set_config
         ])
