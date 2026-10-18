@@ -281,7 +281,7 @@ mod tests {
     fn classify_all(session: &'static Mutex<Session>, audio: &[f32]) -> Vec<f32> {
         let mut classifier = SileroClassifier::start(session).unwrap();
         let mut probabilities = Vec::new();
-        for window in audio.chunks_exact(VAD_WINDOW) {
+        for window in audio.as_chunks::<VAD_WINDOW>().0 {
             classifier.submit(window).expect("fila do VAD");
             classifier.poll(&mut probabilities).unwrap();
             // Sem pressa: dá tempo de a fila andar (o teste não quer o "atrasado").
