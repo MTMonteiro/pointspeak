@@ -33,7 +33,7 @@ Nomes pensados para virar variáveis CSS do Tailwind v4 (`@theme`): o token `col
 | `color.surface` | `#FFFFFF` | `#1C1E22` | Cartões, painel de conteúdo, pílula do HUD (sólida) | — |
 | `color.surface-2` | `#EEF0F3` | `#25282D` | Hover, trilho de barras, campo inativo, esqueleto | — |
 | `color.divider` | `#D0D7DE` | `#33373D` | Divisórias decorativas (não são controles) | — |
-| `color.border-control` | `#7D8590` | `#737B85` | Borda de input, select, radio, checkbox | 3,6 / 3,9 sobre surface |
+| `color.border-control` | `#7D8590` | `#737B85` | Borda de input, select, radio, checkbox | 3,7 / 3,9 sobre surface |
 | `color.text` | `#1F2328` | `#F2F3F5` | Texto principal | 15,8 / 15,0 |
 | `color.text-muted` | `#59636E` | `#A1A7B0` | Texto secundário, legendas | 6,1 / 6,9 |
 | `color.text-disabled` | `#6E7781` | `#868E96` | Opção indisponível (ainda legível) | 4,6 / 5,0 |

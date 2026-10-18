@@ -7,7 +7,10 @@ Onde fica cada coisa (atualize quando criar ou mover pastas).
 - `CLAUDE.md`: aponta para o `AGENTS.md`
 - `README.md`: apresentação do projeto
 - `docs/`: produto, tecnologia e esta estrutura
-  - `docs/design/`: visual do app (DESIGN.md e telas), mantido pela persona `designer`; criado na fase de design (ainda não existe)
+  - `docs/design/`: visual do app, mantido pela persona `designer`
+    - `DESIGN.md`: tokens, medidas do HUD, animações, seções das Configurações, componentes, menu da bandeja
+    - `README.md`: como abrir as telas, mapa estado/seção → arquivo, guia React/Tailwind
+    - `telas/hud.html`, `telas/settings.html`: protótipos estáticos (abrem no navegador, sem build)
   - `docs/memoria/`: aprendizados entre tasks
 - `scripts/build-windows.sh`: gera o instalador Windows (.exe NSIS) por compilação cruzada
 - `scripts/setup-linux.sh`: instala as libs de sistema do Linux (apt, idempotente)
