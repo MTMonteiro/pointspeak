@@ -131,6 +131,16 @@ impl AudioRecorder {
         }
     }
 
+    /// Só o medidor de nível (teste de microfone): sem parada por silêncio e com buffer de 0 s, então
+    /// nenhum áudio fica guardado. Com 0 s o pipeline avisa `MaxDuration` logo no primeiro bloco;
+    /// quem usa ignora esse aviso e só trata o `None` (microfone perdido).
+    pub fn level_meter() -> Self {
+        Self {
+            silence_timeout_ms: None,
+            max_recording_secs: 0,
+        }
+    }
+
     /// Abre o microfone (`None` = padrão do sistema) e começa a gravar.
     ///
     /// `on_level` recebe o nível 0..=1 a cada 30 ms. `on_auto_stop` é chamado uma vez quando a
@@ -375,6 +385,37 @@ mod tests {
         assert_eq!(recorder.max_recording_secs, 42);
         let recorder = AudioRecorder::from_config(&AppConfig::default());
         assert_eq!(recorder.silence_timeout_ms, Some(2_500));
+    }
+
+    #[test]
+    fn level_meter_keeps_no_audio() {
+        let recorder = AudioRecorder::level_meter();
+        let pipeline = CapturePipeline::new(CaptureSettings {
+            input_rate: 16_000,
+            channels: 1,
+            silence_timeout_ms: recorder.silence_timeout_ms,
+            max_recording_secs: recorder.max_recording_secs,
+        })
+        .unwrap();
+        let (tx, rx) = mpsc::sync_channel(8);
+        let levels = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let l = Arc::clone(&levels);
+        let worker = thread::spawn(move || {
+            process_thread(
+                pipeline,
+                rx,
+                Arc::new(AtomicBool::new(false)),
+                move |_| {
+                    l.fetch_add(1, Ordering::SeqCst);
+                },
+                |reason| assert_eq!(reason, Some(StopReason::MaxDuration)),
+            )
+        });
+        tx.send(Captured::Samples(vec![0.1; 16_000])).unwrap();
+        drop(tx);
+        let audio = worker.join().unwrap();
+        assert!(audio.samples.is_empty());
+        assert_eq!(levels.load(Ordering::SeqCst), 16_000 / 480);
     }
 
     #[test]

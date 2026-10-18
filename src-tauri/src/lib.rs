@@ -18,6 +18,7 @@ pub mod dictation;
 pub mod hud;
 pub mod injector;
 pub mod models;
+pub mod settings;
 pub mod shortcut;
 pub mod transcriber;
 mod tray;
@@ -66,6 +67,13 @@ pub fn run() {
             models::list_models,
             models::remove_model,
             models::set_active_model,
+            settings::get_engine_status,
+            settings::list_backends,
+            settings::open_logs_dir,
+            settings::open_models_dir,
+            settings::start_mic_test,
+            settings::stop_mic_test,
+            shortcut::suspend_hotkey,
             transcriber::load_transcriber
         ])
         .setup(|app| {
@@ -76,6 +84,10 @@ pub fn run() {
             app.manage(hud);
             models::init(handle)?;
             app.manage(tray::build(handle)?);
+            app.manage(settings::MicTest::new(
+                settings::CpalMic,
+                settings::TauriMicSink(handle.clone()),
+            ));
 
             let config = app.state::<AppState>().config.lock().unwrap().clone();
             let backend = dictation::TauriBackend::new(handle.clone(), display);

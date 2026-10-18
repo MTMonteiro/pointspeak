@@ -24,7 +24,7 @@ use tauri::{AppHandle, Emitter, Manager, Runtime, State};
 use crate::{config, AppState};
 
 /// Subpasta de `app_data_dir()` com os arquivos `.bin`.
-pub const MODELS_DIR: &str = "models";
+pub const MODELS_DIR: &str = pointspeak_core::settings::MODELS_SUBDIR;
 /// Tempo máximo para conectar e para cada leitura do corpo (detecta conexão parada).
 const HTTP_TIMEOUT: Duration = Duration::from_secs(30);
 
