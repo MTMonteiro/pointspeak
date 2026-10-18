@@ -17,6 +17,9 @@
 //!   (`pointspeak-injector`), criada na primeira chamada. Ela mantém o `Clipboard` vivo: no X11 o
 //!   conteúdo do clipboard só existe enquanto o processo que o pôs o serve, então o texto (e o
 //!   conteúdo restaurado) precisa de um `Clipboard` vivo depois da colagem.
+//! - **Modo `clipboard`** ([`deliver`] com `OutputMode::Clipboard`): só põe o texto no clipboard
+//!   (`copy_to_clipboard`), na mesma thread e com o mesmo `Clipboard` vivo; não simula teclas nem
+//!   restaura o conteúdo anterior. Falha também vira `ErrorKind::PasteFailed`.
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -27,16 +30,17 @@ use std::thread;
 
 use arboard::{Clipboard, ImageData};
 use enigo::{Direction, Enigo, Key, Keyboard, Settings};
+use pointspeak_core::config::OutputMode;
 use pointspeak_core::events::ErrorKind;
 use pointspeak_core::hud_layout::DisplayServer;
 use pointspeak_core::injector::{
-    paste_keys_for, paste_preserving_clipboard, paste_strategy, wtype_args, ydotool_args,
-    ClipboardError, ClipboardImage, ClipboardLike, FocusedApp, PasteError, PasteKeys, PasteMethod,
-    PasteOutcome, RESTORE_DELAY,
+    copy_to_clipboard, paste_keys_for, paste_preserving_clipboard, paste_strategy, wtype_args,
+    ydotool_args, ClipboardError, ClipboardImage, ClipboardLike, FocusedApp, PasteError, PasteKeys,
+    PasteMethod, PasteOutcome, RESTORE_DELAY,
 };
 use thiserror::Error;
 
-/// Falha ao colar. O clipboard original é restaurado quando o clipboard permite.
+/// Falha ao colar (ou ao copiar, no modo `clipboard`). O clipboard original é restaurado quando o clipboard permite.
 #[derive(Debug, Error)]
 pub enum InjectError {
     #[error("Clipboard indisponível: {0}")]
@@ -57,10 +61,17 @@ impl InjectError {
 /// Cola `text` no app em foco preservando o clipboard. Bloqueia até terminar (~50 ms mais o tempo
 /// das teclas): chame fora da thread principal e do runtime async. Texto vazio não cola nada.
 pub fn inject(text: &str, display: DisplayServer) -> Result<(), InjectError> {
+    deliver(text, display, OutputMode::Paste)
+}
+
+/// Entrega `text` conforme o `outputMode`: `Paste` cola como [`inject`]; `Clipboard` só deixa o
+/// texto no clipboard. Bloqueia até terminar; texto vazio não toca o sistema.
+pub fn deliver(text: &str, display: DisplayServer, mode: OutputMode) -> Result<(), InjectError> {
     let (reply, result) = mpsc::channel();
     let job = Job {
         text: text.to_owned(),
         display,
+        mode,
         reply,
     };
     worker().send(job).map_err(|_| InjectError::Worker)?;
@@ -70,6 +81,7 @@ pub fn inject(text: &str, display: DisplayServer) -> Result<(), InjectError> {
 struct Job {
     text: String,
     display: DisplayServer,
+    mode: OutputMode,
     reply: mpsc::Sender<Result<(), InjectError>>,
 }
 
@@ -82,7 +94,10 @@ fn worker() -> &'static mpsc::Sender<Job> {
             .spawn(move || {
                 let mut injector = Injector::default();
                 for job in rx {
-                    let result = run_guarded(&mut injector, |i| i.run(&job.text, job.display));
+                    let result = run_guarded(&mut injector, |i| match job.mode {
+                        OutputMode::Paste => i.run(&job.text, job.display),
+                        OutputMode::Clipboard => i.copy(&job.text),
+                    });
                     let _ = job.reply.send(result);
                 }
             })
@@ -110,17 +125,20 @@ struct Injector {
     enigo: Option<Enigo>,
 }
 
+/// `Clipboard` da thread, criado na primeira vez e mantido vivo (X11).
+fn open_clipboard(slot: &mut Option<Clipboard>) -> Result<&mut Clipboard, InjectError> {
+    Ok(match slot {
+        Some(clipboard) => clipboard,
+        empty => empty.insert(Clipboard::new().map_err(|e| InjectError::Clipboard(e.to_string()))?),
+    })
+}
+
 impl Injector {
     fn run(&mut self, text: &str, display: DisplayServer) -> Result<(), InjectError> {
         if text.trim().is_empty() {
             return Ok(());
         }
-        let clipboard = match &mut self.clipboard {
-            Some(clipboard) => clipboard,
-            empty => {
-                empty.insert(Clipboard::new().map_err(|e| InjectError::Clipboard(e.to_string()))?)
-            }
-        };
+        let clipboard = open_clipboard(&mut self.clipboard)?;
         let keys = paste_keys_for(&focused_app(display));
         let enigo = &mut self.enigo;
         let outcome = paste_preserving_clipboard(
@@ -140,6 +158,17 @@ impl Injector {
             Err(PasteError::SetText(err)) => Err(InjectError::Clipboard(err.to_string())),
             Err(PasteError::Paste(err)) => Err(InjectError::Paste(err)),
         }
+    }
+
+    /// Modo `clipboard`: o texto fica no clipboard, sem teclas e sem restaurar o anterior.
+    fn copy(&mut self, text: &str) -> Result<(), InjectError> {
+        if text.trim().is_empty() {
+            return Ok(());
+        }
+        let clipboard = open_clipboard(&mut self.clipboard)?;
+        copy_to_clipboard(&mut ArboardClipboard(clipboard), text)
+            .map(|_| ())
+            .map_err(|err| InjectError::Clipboard(err.to_string()))
     }
 }
 
@@ -418,6 +447,7 @@ mod tests {
         // Volta antes de abrir o clipboard ou o enigo (os checks rodam sem tela).
         let mut injector = Injector::default();
         assert!(injector.run("  \n", DisplayServer::X11).is_ok());
+        assert!(injector.copy("\t ").is_ok());
         assert!(injector.clipboard.is_none() && injector.enigo.is_none());
     }
 

@@ -82,7 +82,7 @@ pub trait Backend: Send + 'static {
     fn stop_recording(&mut self) -> Option<RecordedAudio>;
     /// Transcreve fora desta thread e responde `TranscriptionFinished`.
     fn transcribe(&mut self, audio: Vec<f32>, inbox: Inbox);
-    /// Cola fora desta thread e responde `InjectFinished`.
+    /// Cola (ou só copia, no `outputMode` `clipboard`) fora desta thread e responde `InjectFinished`.
     fn inject(&mut self, text: String, inbox: Inbox);
     fn show_hud(&mut self);
     fn hide_hud(&mut self);
@@ -426,12 +426,14 @@ impl Backend for TauriBackend {
 
     fn inject(&mut self, text: String, inbox: Inbox) {
         let display = self.display;
+        // Lido a cada ditado: trocar o `outputMode` nas Configurações vale já no próximo.
+        let mode = current_config(&self.app).output_mode;
         spawn_reply(
             "pointspeak-inject",
             inbox,
             Input::InjectFinished(Err(ErrorKind::PasteFailed)),
             move || {
-                let result = injector::inject(&text, display).map_err(|e| {
+                let result = injector::deliver(&text, display, mode).map_err(|e| {
                     eprintln!("[pointspeak] colagem: {e}");
                     e.kind()
                 });
