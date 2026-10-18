@@ -21,7 +21,9 @@
     "allow-set-active-model",
     "allow-set-config",
     "allow-start-mic-test",
+    "allow-start-transcription-test",
     "allow-stop-mic-test",
+    "allow-stop-transcription-test",
     "allow-suspend-hotkey"
   ]
 }

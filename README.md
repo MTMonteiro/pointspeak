@@ -95,8 +95,12 @@ a transcrição roda (Automático, NPU/GPU via DirectML no Windows, ou CPU). Pel
   o rodapé das Configurações. `Pronto · <modelo> · DirectML · NPU` = a transcrição roda na NPU (o gráfico só sobe
   enquanto transcreve). `· CPU` = a variante ONNX do modelo não foi baixada (em **Modelos**, com o DirectML
   escolhido, o modelo aparece como `Baixar`: baixe-o de novo) ou a aceleração falhou (veja o aviso em
-  **Hardware**). `· DirectML · GPU` = a NPU não iniciou ou não abriu o modelo e a GPU assumiu; o motivo aparece
-  em **Hardware**. O cartão `NPU (DirectML)` diz se o Windows encontrou uma NPU (`NPU detectada`).
+  **Hardware**). `· DirectML · GPU` = a NPU não iniciou, não abriu o modelo ou calculou errado na verificação feita ao
+  carregar o modelo (`NPU reprovou na verificação`) e a GPU assumiu; o motivo aparece em **Hardware**.
+- **O texto sai sem sentido (palavras de várias línguas, repetidas):** use **Configurações → Microfone →
+  Testar transcrição** e veja o dispositivo no diagnóstico. Ao carregar o modelo no DirectML, o PointSpeak
+  compara a NPU e a GPU com a CPU e troca de dispositivo se o resultado divergir; se ainda assim o texto
+  sair errado, escolha `CPU` em **Hardware**. O cartão `NPU (DirectML)` diz se o Windows encontrou uma NPU (`NPU detectada`).
 - **`Microfone indisponível`:** confira o microfone em **Configurações → Microfone** (**Testar microfone**)
   e nas permissões de microfone do sistema.
 - **`Nada foi ouvido`:** a gravação ficou sem fala (ou foi curta demais). Fale mais perto do microfone ou

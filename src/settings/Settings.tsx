@@ -27,6 +27,7 @@ import {
   Switch,
 } from "./components";
 import { HardwareSection } from "./HardwareSection";
+import { TranscriptionTest } from "./TranscriptionTest";
 import { ModelSection } from "./ModelSection";
 import { useConfig } from "./useConfig";
 import "./Settings.css";
@@ -185,6 +186,7 @@ export function Settings() {
   const [micTestError, setMicTestError] = useState<string>();
   const [micTestRunning, setMicTestRunning] = useState(false);
   const [micLevel, setMicLevel] = useState(0);
+  const [transcriptionBusy, setTranscriptionBusy] = useState(false);
   const [captureActive, setCaptureActive] = useState(false);
   const [captureError, setCaptureError] = useState<CaptureError>();
   const [logError, setLogError] = useState<string>();
@@ -488,6 +490,10 @@ export function Settings() {
               testError={micTestError}
               testing={micTestRunning}
               level={micLevel}
+              testDisabled={transcriptionBusy}
+              engineStatus={engineStatus}
+              visible={activeSection === "microfone"}
+              onTranscriptionBusy={setTranscriptionBusy}
               onMicChange={(microphone) => {
                 if (micTestRunningRef.current) void stopMicTest();
                 void update({ microphone });
@@ -596,6 +602,10 @@ function MicrophoneSection({
   testError,
   testing,
   level,
+  testDisabled,
+  engineStatus,
+  visible,
+  onTranscriptionBusy,
   onMicChange,
   onStartTest,
   onStopTest,
@@ -610,6 +620,10 @@ function MicrophoneSection({
   testError?: string;
   testing: boolean;
   level: number;
+  testDisabled: boolean;
+  engineStatus: EngineStatus | null;
+  visible: boolean;
+  onTranscriptionBusy: (busy: boolean) => void;
   onMicChange: (microphone: string | null) => void;
   onStartTest: () => void;
   onStopTest: () => void;
@@ -675,11 +689,19 @@ function MicrophoneSection({
         <Button
           className="settings-mic-test-button"
           onClick={testing ? onStopTest : onStartTest}
+          disabled={testDisabled && !testing}
           aria-describedby={testError ? "mic-test-error" : undefined}
         >
           {testing ? "Parar teste" : "Testar microfone"}
         </Button>
       </div>
+      <TranscriptionTest
+        microphone={config.microphone}
+        engineStatus={engineStatus}
+        micTestRunning={testing}
+        visible={visible}
+        onBusyChange={onTranscriptionBusy}
+      />
     </>
   );
 }

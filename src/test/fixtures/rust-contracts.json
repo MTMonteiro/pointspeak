@@ -180,5 +180,29 @@
   "stateChangedPasteError": {
     "message": "Falha ao colar",
     "state": "error"
+  },
+  "transcriptionTest": {
+    "audioSeconds": 1.5,
+    "backend": "directml",
+    "device": "npu",
+    "elapsedMs": 820,
+    "language": "pt",
+    "model": "base",
+    "peak": 0.5,
+    "sampleRate": 48000,
+    "text": "Olá, isto é um teste."
+  },
+  "transcriptionTestCpu": {
+    "audioSeconds": 1.5,
+    "backend": "cpu",
+    "elapsedMs": 820,
+    "language": "auto",
+    "model": "base",
+    "peak": 0.5,
+    "sampleRate": 48000,
+    "text": "Olá, isto é um teste."
+  },
+  "transcriptionTestEnded": {
+    "reason": "maxDuration"
   }
 }

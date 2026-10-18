@@ -132,6 +132,13 @@ pub fn onnx_devices(backend: Backend) -> &'static [Option<DmlDevice>] {
     }
 }
 
+/// Se a engine ONNX no `backend` passa pela verificação de sanidade na carga
+/// (`whisper_onnx::sanity`): só o DirectML (NPU e GPU), onde um dispositivo pode abrir o modelo e
+/// calcular errado. A CPU é a própria referência; OpenVINO e CUDA não mudam.
+pub fn sanity_checked(backend: Backend) -> bool {
+    backend == Backend::Directml
+}
+
 /// Backend e dispositivo nos textos: `DirectML · NPU`, `DirectML · GPU` ou só o backend.
 pub fn runtime_label(backend: Backend, device: Option<DmlDevice>) -> String {
     match device {
@@ -159,6 +166,7 @@ impl DeviceFallback {
         let what = match &self.error {
             OnnxLoadError::Provider(e) => format!("{failed} não iniciou: {e}"),
             OnnxLoadError::Model(e) => format!("{failed} não carregou o modelo ONNX: {e}"),
+            OnnxLoadError::Diverged(e) => format!("{failed} reprovou na verificação: {e}"),
         };
         format!("{what}. Usando a {}.", self.used.label())
     }
@@ -175,6 +183,9 @@ pub enum FallbackReason {
     ProviderFailed { backend: Backend, error: String },
     /// A EP iniciou, mas o ONNX Runtime não abriu o modelo (ou a engine não montou).
     ModelLoadFailed { backend: Backend, error: String },
+    /// O modelo abriu, mas calcula diferente da CPU na verificação de sanidade
+    /// (`whisper_onnx::sanity`).
+    Diverged { backend: Backend, error: String },
 }
 
 impl FallbackReason {
@@ -191,6 +202,12 @@ impl FallbackReason {
             FallbackReason::ModelLoadFailed { backend, error } => {
                 format!(
                     "{} não carregou o modelo ONNX: {error}",
+                    backend_label(*backend)
+                )
+            }
+            FallbackReason::Diverged { backend, error } => {
+                format!(
+                    "{} reprovou na verificação: {error}",
                     backend_label(*backend)
                 )
             }
@@ -226,6 +243,9 @@ pub enum OnnxLoadError {
     Provider(String),
     /// O modelo não abriu (arquivo, operador sem suporte, vocabulário inválido...).
     Model(String),
+    /// O modelo abriu, mas o dispositivo calcula diferente da CPU numa entrada fixa
+    /// (`whisper_onnx::sanity`): o ditado sairia como texto sem sentido.
+    Diverged(String),
 }
 
 /// O que é preciso saber para carregar a engine do modelo ativo.
@@ -378,6 +398,10 @@ pub fn load_with_fallback<E>(
                 backend: plan.backend,
                 error,
             },
+            Err(OnnxLoadError::Diverged(error)) => FallbackReason::Diverged {
+                backend: plan.backend,
+                error,
+            },
         }
     };
     if !plan.ggml_ready {
@@ -412,6 +436,7 @@ fn load_on_devices<E>(
     let summarize = |e: OnnxLoadError| match e {
         OnnxLoadError::Provider(e) => OnnxLoadError::Provider(summarize_error(&e)),
         OnnxLoadError::Model(e) => OnnxLoadError::Model(summarize_error(&e)),
+        OnnxLoadError::Diverged(e) => OnnxLoadError::Diverged(summarize_error(&e)),
     };
     let mut first_failure: Option<(DmlDevice, OnnxLoadError)> = None;
     let mut last_error = None;
@@ -790,6 +815,11 @@ mod tests {
                 OnnxLoadError::Model("decoder_model_merged_fp16.onnx: op sem suporte".into()),
                 "NPU não carregou o modelo ONNX: decoder_model_merged_fp16.onnx: op sem suporte. Usando a GPU.",
             ),
+            (
+                // A NPU abre o modelo, mas calcula errado (a "salada de tokens" do #823).
+                OnnxLoadError::Diverged("resultado diverge da CPU (correlação 0.12)".into()),
+                "NPU reprovou na verificação: resultado diverge da CPU (correlação 0.12). Usando a GPU.",
+            ),
         ] {
             let calls = Calls::default();
             let loaded = load_with_fallback(
@@ -814,6 +844,59 @@ mod tests {
             assert_eq!(
                 calls.take(),
                 [("npu", Backend::Directml), ("gpu", Backend::Directml)]
+            );
+        }
+    }
+
+    #[test]
+    fn npu_and_gpu_diverging_fall_back_to_cpu() {
+        let calls = Calls::default();
+        let diverged = || OnnxLoadError::Diverged("resultado diverge da CPU".into());
+        let loaded = load_with_fallback(
+            &plan(Backend::Directml, true, true),
+            &onnx_dir(),
+            calls.onnx_seq(vec![Err(diverged()), Err(diverged())]),
+            calls.ggml(Ok("ggml")),
+        )
+        .unwrap();
+        assert_eq!(loaded.engine, "ggml");
+        assert_eq!(loaded.runtime.backend, Backend::Cpu);
+        assert_eq!(
+            loaded.runtime.fallback,
+            Some(FallbackReason::Diverged {
+                backend: Backend::Directml,
+                error: "resultado diverge da CPU".into()
+            })
+        );
+        assert_eq!(
+            loaded.runtime.summary(),
+            "whisper.cpp em CPU (fallback: DirectML reprovou na verificação: resultado diverge da CPU)"
+        );
+        // Sem o ggml no disco, o motivo vira o erro de carga.
+        let calls = Calls::default();
+        let err = load_with_fallback(
+            &plan(Backend::Directml, true, false),
+            &onnx_dir(),
+            calls.onnx_seq(vec![Err(diverged()), Err(diverged())]),
+            calls.ggml(Ok("ggml")),
+        )
+        .err()
+        .unwrap();
+        assert_eq!(
+            err,
+            TranscribeError::Load(
+                "DirectML reprovou na verificação: resultado diverge da CPU".into()
+            )
+        );
+    }
+
+    #[test]
+    fn only_directml_runs_the_sanity_check() {
+        for backend in ALL {
+            assert_eq!(
+                sanity_checked(backend),
+                backend == Backend::Directml,
+                "{backend:?}"
             );
         }
     }

@@ -14,6 +14,8 @@ import {
   type ModelProgressPayload,
   type ModelsOverview,
   type StateChangedPayload,
+  type TranscriptionTestEndedPayload,
+  type TranscriptionTestResult,
 } from "../lib/contract";
 import { HudOverlay } from "../hud/HudOverlay";
 import { Settings } from "../settings/Settings";
@@ -123,6 +125,23 @@ function isBackendOption(value: unknown): value is BackendOption {
     && (value.detail === undefined || typeof value.detail === "string");
 }
 
+function isTranscriptionTestResult(value: unknown): value is TranscriptionTestResult {
+  return isRecord(value)
+    && typeof value.text === "string"
+    && isOneOf(value.model, MODEL_IDS)
+    && isOneOf(value.backend, ["cpu", "directml", "openvino", "cuda", "vulkan"])
+    && (value.device === undefined || isOneOf(value.device, ["npu", "gpu"]))
+    && isOneOf(value.language, ["pt", "en", "auto"])
+    && typeof value.audioSeconds === "number"
+    && typeof value.elapsedMs === "number"
+    && typeof value.peak === "number"
+    && typeof value.sampleRate === "number";
+}
+
+function isTranscriptionTestEnded(value: unknown): value is TranscriptionTestEndedPayload {
+  return isRecord(value) && isOneOf(value.reason, ["maxDuration", "deviceLost", "dictation", "windowClosed"]);
+}
+
 function checked<T>(value: unknown, guard: (candidate: unknown) => candidate is T, name: string): T {
   expect(guard(value), `${name} precisa seguir o contrato TypeScript`).toBe(true);
   return value as T;
@@ -142,6 +161,9 @@ function readContracts() {
     modelsOnnx: checked(rawFixtures.modelsOnnx, isModelsOverview, "modelsOnnx"),
     modelProgress: checked(rawFixtures.modelProgress, isModelProgress, "modelProgress"),
     modelFailedProgress: checked(rawFixtures.modelFailedProgress, isModelProgress, "modelFailedProgress"),
+    transcriptionTest: checked(rawFixtures.transcriptionTest, isTranscriptionTestResult, "transcriptionTest"),
+    transcriptionTestCpu: checked(rawFixtures.transcriptionTestCpu, isTranscriptionTestResult, "transcriptionTestCpu"),
+    transcriptionTestEnded: checked(rawFixtures.transcriptionTestEnded, isTranscriptionTestEnded, "transcriptionTestEnded"),
     backends: checked(rawFixtures.backends, (value): value is BackendOption[] =>
       Array.isArray(value) && value.every(isBackendOption), "backends"),
   };
@@ -159,6 +181,13 @@ describe("fixtures do contrato Rust ↔ TypeScript", () => {
       if (command === "list_backends") return fixtures.backends;
       return undefined;
     });
+  });
+
+  it("o teste de transcrição segue o contrato TypeScript", () => {
+    const fixtures = readContracts();
+    expect(fixtures.transcriptionTest.device).toBe("npu");
+    expect(fixtures.transcriptionTestCpu.device).toBeUndefined();
+    expect(fixtures.transcriptionTestEnded.reason).toBe("maxDuration");
   });
 
   it("o HUD aceita os payloads de estado e nível serializados pelo Rust", async () => {

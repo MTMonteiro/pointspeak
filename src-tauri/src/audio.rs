@@ -23,6 +23,7 @@ use pointspeak_core::audio::{
 use pointspeak_core::config::AppConfig;
 use pointspeak_core::dictation::RecordedAudio;
 use pointspeak_core::events::ErrorKind;
+use pointspeak_core::transcription_test;
 use pointspeak_core::vad::{SilenceMode, VoiceClassifier};
 use serde::{Serialize, Serializer};
 use thiserror::Error;
@@ -143,6 +144,15 @@ impl AudioRecorder {
         }
     }
 
+    /// Teste de transcrição: grava sem parada por silêncio e para sozinho no limite do teste
+    /// (`pointspeak_core::transcription_test::MAX_SECS`, avisado como `MaxDuration`).
+    pub fn transcription_test() -> Self {
+        Self {
+            silence_timeout_ms: None,
+            max_recording_secs: transcription_test::MAX_SECS,
+        }
+    }
+
     /// Abre o microfone (`None` = padrão do sistema) e começa a gravar, com a parada por silêncio
     /// só pelo RMS. Veja [`start_with_classifier`](Self::start_with_classifier).
     pub fn start(
@@ -226,6 +236,7 @@ impl AudioRecorder {
         };
 
         Ok(RecordingHandle {
+            input_rate,
             stop_tx,
             capture,
             processing,
@@ -236,6 +247,8 @@ impl AudioRecorder {
 
 /// Gravação em andamento. Soltar o handle sem `stop` também fecha o microfone.
 pub struct RecordingHandle {
+    /// Taxa do microfone, antes do resample para 16 kHz.
+    input_rate: u32,
     stop_tx: Sender<()>,
     capture: JoinHandle<()>,
     processing: JoinHandle<RecordedAudio>,
@@ -243,6 +256,11 @@ pub struct RecordingHandle {
 }
 
 impl RecordingHandle {
+    /// Taxa de amostragem original do microfone (o áudio devolvido é sempre 16 kHz).
+    pub fn input_rate(&self) -> u32 {
+        self.input_rate
+    }
+
     /// O microfone foi desconectado ou falhou durante a gravação (o HUD mostra o erro).
     pub fn device_lost(&self) -> bool {
         self.device_lost.load(Ordering::SeqCst)
@@ -407,6 +425,13 @@ mod tests {
         assert_eq!(recorder.max_recording_secs, 42);
         let recorder = AudioRecorder::from_config(&AppConfig::default());
         assert_eq!(recorder.silence_timeout_ms, Some(2_500));
+    }
+
+    #[test]
+    fn transcription_test_records_without_silence_stop_up_to_the_limit() {
+        let recorder = AudioRecorder::transcription_test();
+        assert_eq!(recorder.silence_timeout_ms, None);
+        assert_eq!(recorder.max_recording_secs, transcription_test::MAX_SECS);
     }
 
     #[test]
