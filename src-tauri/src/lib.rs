@@ -11,6 +11,7 @@ use tauri::{Manager, WindowEvent};
 pub mod audio;
 mod config;
 pub mod hud;
+pub mod injector;
 pub mod models;
 pub mod transcriber;
 mod tray;

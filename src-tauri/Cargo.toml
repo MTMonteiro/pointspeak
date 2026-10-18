@@ -14,7 +14,11 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
+# Clipboard do injector (texto e imagem, para salvar e restaurar o do usuário).
+arboard = "3.7"
 cpal = "0.18"
+# Teclas simuladas da colagem (Ctrl+V / Shift+Insert). No Linux, X11 via x11rb (sem libxdo).
+enigo = "0.6"
 log = "0.4"
 # Núcleos físicos para as threads do whisper.cpp.
 num_cpus = "1"
@@ -32,7 +36,16 @@ whisper-rs = { version = "0.16", features = ["log_backend"] }
 # Win32: mostrar o HUD sem ativar a janela (`ShowWindow(SW_SHOWNOACTIVATE)`, veja `src/hud.rs`).
 # Mesma versão que o Tauri usa, para o `HWND` do `WebviewWindow::hwnd()` ser o mesmo tipo.
 [target.'cfg(windows)'.dependencies]
-windows = { version = "0.62", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging"] }
+# Injector: `GetForegroundWindow` → processo (`OpenProcess` + `QueryFullProcessImageNameW`).
+windows = { version = "0.62", features = [
+    "Win32_Foundation",
+    "Win32_System_Threading",
+    "Win32_UI_WindowsAndMessaging",
+] }
+
+# Injector no X11: janela ativa (`_NET_ACTIVE_WINDOW`) → `WM_CLASS`. Mesma versão que o enigo usa.
+[target.'cfg(target_os = "linux")'.dependencies]
+x11rb = "0.13"
 
 [dev-dependencies]
 hound = "3"
