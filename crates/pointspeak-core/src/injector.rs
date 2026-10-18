@@ -62,6 +62,14 @@ fn is_terminal(name: &str) -> bool {
     TERMINALS.iter().any(|t| t.eq_ignore_ascii_case(name))
 }
 
+/// Separa o valor bruto da propriedade `WM_CLASS` do X11 (`instância\0classe\0`) nas suas partes.
+pub fn parse_wm_class(raw: &[u8]) -> Vec<String> {
+    raw.split(|b| *b == 0)
+        .filter(|part| !part.is_empty())
+        .map(|part| String::from_utf8_lossy(part).into_owned())
+        .collect()
+}
+
 /// Nome do arquivo sem o caminho (`C:\Windows\System32\cmd.exe` → `cmd.exe`).
 fn file_name(path: &str) -> &str {
     path.rsplit(['\\', '/']).next().unwrap_or(path)
@@ -328,6 +336,23 @@ mod tests {
         );
         // Só o nome inteiro conta: "xterminal" não é "xterm".
         assert_eq!(paste_keys_for(&class(&["xterminal"])), PasteKeys::CtrlV);
+    }
+
+    #[test]
+    fn wm_class_is_split_on_nul() {
+        assert_eq!(
+            parse_wm_class(b"gnome-terminal-server\0Gnome-terminal\0"),
+            ["gnome-terminal-server", "Gnome-terminal"]
+        );
+        assert_eq!(parse_wm_class(b"kitty\0kitty"), ["kitty", "kitty"]);
+        assert!(parse_wm_class(b"").is_empty());
+        assert_eq!(
+            paste_keys_for(&FocusedApp {
+                window_class: parse_wm_class(b"xterm\0XTerm\0"),
+                process_name: None,
+            }),
+            PasteKeys::ShiftInsert
+        );
     }
 
     #[test]

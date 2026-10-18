@@ -11,6 +11,7 @@ PACKAGES=(
   librsvg2-dev
   libasound2-dev
   libxdo-dev
+  libxkbcommon-dev
   libssl-dev
   libx11-dev
   libxcb1-dev
