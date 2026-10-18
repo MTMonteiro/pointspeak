@@ -59,5 +59,5 @@ vi.mock("@tauri-apps/api/core", () => ({
 }));
 
 vi.mock("@tauri-apps/api/app", () => ({
-  getVersion: vi.fn(() => Promise.resolve("0.1.0")),
+  getVersion: vi.fn(() => Promise.resolve("1.0.0")),
 }));

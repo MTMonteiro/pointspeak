@@ -305,7 +305,7 @@ describe("Settings", () => {
     render(<Settings />);
     expect(await screen.findByRole("status", { name: "Estado do motor de transcrição" })).toHaveTextContent("Pronto · base · CPU");
     fireEvent.click(screen.getByRole("link", { name: "Sobre" }));
-    expect(screen.getByText("Versão 0.1.0")).toBeInTheDocument();
+    expect(screen.getByText("Versão 1.0.0")).toBeInTheDocument();
     expect(screen.getByText("Seu áudio nunca sai deste computador.")).toBeInTheDocument();
     expect(screen.getByText("base (whisper.cpp)")).toBeInTheDocument();
     expect(screen.getByText("CPU")).toBeInTheDocument();
