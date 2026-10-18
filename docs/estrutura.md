@@ -11,6 +11,7 @@ Onde fica cada coisa (atualize quando criar ou mover pastas).
     - `DESIGN.md`: tokens, medidas do HUD, animações, seções das Configurações, componentes, menu da bandeja
     - `README.md`: como abrir as telas, mapa estado/seção → arquivo, guia React/Tailwind
     - `telas/hud.html`, `telas/settings.html`: protótipos estáticos (abrem no navegador, sem build)
+  - `docs/checklist-manual.md`: roteiro de validação manual no Windows (.exe) e no Linux X11/Wayland
   - `docs/memoria/`: aprendizados entre tasks
 - `scripts/build-windows.sh`: gera o instalador Windows (.exe NSIS) por compilação cruzada
 - `scripts/setup-linux.sh`: instala as libs de sistema do Linux (apt, idempotente)
@@ -28,6 +29,7 @@ Onde fica cada coisa (atualize quando criar ou mover pastas).
 - `crates/pointspeak-core/`: núcleo em Rust puro, testável sem sistema
   - `src/audio.rs`: pipeline de áudio puro (downmix, resample 16 kHz com `rubato`, RMS/`level`, `SilenceDetector`, `RecordingBuffer`, `CapturePipeline`) e `MicrophoneInfo`
   - `src/config.rs`: `AppConfig` (padrões, serde camelCase, `validate()`/`sanitized()`) e `ModelId`
+  - `src/dictation.rs`: máquina do ditado (`Dictation`: `Input` → `Effect`), tempos de dispensa, `RecordedAudio` (sem fala) e `TrayStatus` (textos da bandeja)
   - `src/events.rs`: nomes e payloads dos eventos `hud://state-changed` (com `anchor` opcional), `hud://audio-level` e `models://progress`; `ErrorKind` com as mensagens do HUD
   - `src/hotkey.rs`: `HotkeyController` (Push-to-Talk/Toggle, autorepeat, gravação curta) e parser de acelerador (`Alt+Z`)
   - `src/hud.rs`: máquina de estados do HUD (`Idle`, `Recording`, `Transcribing`, `Success`, `Error`)
@@ -39,6 +41,6 @@ Onde fica cada coisa (atualize quando criar ou mover pastas).
   - `tauri.conf.json`: identificador, janelas `settings` e `hud`, bundle (nsis, deb, appimage; WebView2 `embedBootstrapper` no Windows)
   - `capabilities/`: permissões das janelas
   - `icons/`: ícones gerados por `npx tauri icon src-tauri/app-icon.png -o src-tauri/icons`
-  - `src/lib.rs`: montagem do app (plugins, estado, janelas, comandos); `src/audio.rs`: captura do microfone com `cpal` (`AudioRecorder`, `RecordingHandle`) e comando `list_microphones`; `src/config.rs`: `config.json` e comandos `get_config`/`set_config`; `src/hud.rs`: `HudController` (mostra/esconde a janela `hud` sem foco e com click-through, thread de rastreio do cursor a ~60 Hz só com o HUD visível; `SW_SHOWNOACTIVATE` no Windows); `src/injector.rs`: `inject(texto, display)` (arboard + enigo, `wtype`/`ydotool` no Wayland, app em foco por `GetForegroundWindow`/`_NET_ACTIVE_WINDOW`, thread `pointspeak-injector`); `src/models.rs`: pasta `app_data_dir()/models`, download HTTP (`reqwest`) e comandos `list_models`/`download_model`/`cancel_download`/`remove_model`/`set_active_model`; `src/tray.rs`: bandeja; `src/transcriber.rs`: `WhisperTranscriber` (`whisper-rs`), `ensure_loaded`/`transcribe` sobre o `AppState` e redirecionamento dos logs do whisper.cpp; `src/main.rs`: ponto de entrada
+  - `src/lib.rs`: montagem do app (plugins, handler do atalho, estado, janelas, comandos; no `setup` registra o atalho, sobe o executor do ditado e carrega o modelo); `src/audio.rs`: captura do microfone com `cpal` (`AudioRecorder`, `RecordingHandle`) e comando `list_microphones`; `src/config.rs`: `config.json` e comandos `get_config`/`set_config` (troca o atalho); `src/dictation.rs`: executor do ditado (thread única dona do estado, trait `Backend`, `TauriBackend`, `reload_model`); `src/hud.rs`: `HudController` (mostra/esconde a janela `hud` sem foco e com click-through, thread de rastreio do cursor a ~60 Hz só com o HUD visível; `SW_SHOWNOACTIVATE` no Windows); `src/injector.rs`: `inject(texto, display)` (arboard + enigo, `wtype`/`ydotool` no Wayland, app em foco por `GetForegroundWindow`/`_NET_ACTIVE_WINDOW`, thread `pointspeak-injector`); `src/models.rs`: pasta `app_data_dir()/models`, download HTTP (`reqwest`) e comandos `list_models`/`download_model`/`cancel_download`/`remove_model`/`set_active_model`; `src/shortcut.rs`: `Accelerator` → `Shortcut` do plugin e `HotkeyBinding` (troca com conflito em PT-BR, pausa); `src/tray.rs`: bandeja (linha de estado, Pausar/Retomar, Configurações…, Sair); `src/transcriber.rs`: `WhisperTranscriber` (`whisper-rs`), `ensure_loaded`/`transcribe` sobre o `AppState` e redirecionamento dos logs do whisper.cpp; `src/main.rs`: ponto de entrada
   - `examples/inject.rs`: cola um texto no app em foco pelo injector, para teste manual (`cargo run -p pointspeak --example inject -- "texto"`)
   - `examples/transcribe.rs`: transcreve um WAV pela linha de comando (`cargo run -p pointspeak --release --example transcribe -- <modelo.bin> <audio.wav> [pt|en|auto]`)

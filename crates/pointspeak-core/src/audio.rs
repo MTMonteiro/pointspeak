@@ -428,6 +428,11 @@ impl CapturePipeline {
         self.stop
     }
 
+    /// Se o detector de silêncio ouviu fala; `None` com a parada por silêncio desligada (sem detector).
+    pub fn heard_speech(&self) -> Option<bool> {
+        self.silence.as_ref().map(SilenceDetector::heard_speech)
+    }
+
     /// Esvazia o resampler e devolve o áudio gravado (16 kHz mono, no máximo `maxRecordingSecs`).
     pub fn finish(mut self) -> Vec<f32> {
         let mut tail = Vec::new();
@@ -677,11 +682,13 @@ mod tests {
         for chunk in noise(0.0017, 48_000).chunks(480) {
             assert_eq!(p.push(chunk, |l| levels.push(l)), None);
         }
+        assert_eq!(p.heard_speech(), Some(false));
         // 1 s de "fala" (seno a -12 dBFS).
         for chunk in sine(220.0, 0.35, 48_000, 1.0).chunks(480) {
             assert_eq!(p.push(chunk, |l| levels.push(l)), None);
         }
         assert!(levels.iter().any(|&l| l > 0.8));
+        assert_eq!(p.heard_speech(), Some(true));
         // Silêncio: dispara entre 2,5 s e 2,5 s + uma janela (mais o atraso do resampler).
         let mut fired_at_ms = None;
         for (i, chunk) in vec![0.0; 48_000 * 4].chunks(480).enumerate() {

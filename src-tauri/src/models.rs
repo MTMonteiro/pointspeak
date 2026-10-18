@@ -253,6 +253,9 @@ pub fn set_active_model(
         emit_state(&app, old, Some(id));
     }
     emit_state(&app, id, Some(id));
+    if previous != Some(id) {
+        crate::dictation::reload_model(&app);
+    }
     Ok(saved)
 }
 

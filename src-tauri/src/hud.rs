@@ -230,7 +230,7 @@ fn set_anchor(app: &AppHandle, shared: &Shared, anchor: HudAnchor) {
         }
         *current = anchor;
     }
-    let state = app.state::<AppState>().hud.lock().unwrap().state();
+    let state = *app.state::<AppState>().hud.lock().unwrap();
     let payload = StateChangedPayload::new(state).with_anchor(anchor);
     if let Err(err) = app.emit_to(HUD_WINDOW, HUD_STATE_CHANGED, payload) {
         log::warn!("HUD: falha ao emitir a âncora: {err}");
