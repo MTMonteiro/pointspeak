@@ -54,7 +54,7 @@ Abra um editor de texto (Bloco de Notas / gedit / Kate) com o cursor numa linha 
 | 4.2 | Copiar uma imagem (print), ditar, colar num editor de imagem | A imagem volta ao clipboard | ☐ | ☐ | ☐ |
 | 4.3 | Ditar num terminal (Windows Terminal / gnome-terminal / konsole) | O texto entra no prompt (Shift+Insert no Linux X11) | ☐ | ☐ | ☐ |
 | 4.4 | Ditar num navegador (campo de busca) | O texto entra no campo | ☐ | ☐ | ☐ |
-| 4.5 | Wayland sem `wtype`/`ydotool` | HUD `Cole com Ctrl+V` por ~4 s; Ctrl+V cola o ditado | — | — | ☐ |
+| 4.5 | Wayland sem `wtype`/`ydotool` | HUD mostra `Falha ao colar` por ~4 s; o clipboard original é restaurado | — | — | ☐ |
 
 ## 5. HUD
 

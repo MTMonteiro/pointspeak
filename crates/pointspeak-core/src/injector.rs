@@ -214,13 +214,12 @@ pub enum PasteOutcome {
     PastedNotRestored(ClipboardError),
 }
 
-/// Falha de [`paste_preserving_clipboard`]. Nos dois casos o HUD mostra "Cole com Ctrl+V".
+/// Falha de [`paste_preserving_clipboard`]. O HUD mostra uma mensagem curta de colagem.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PasteError<E> {
     /// Não deu para pôr o texto no clipboard; a colagem nem foi tentada.
     SetText(ClipboardError),
-    /// A colagem falhou. O texto transcrito **fica** no clipboard (não restaura) para o usuário
-    /// colar à mão.
+    /// A colagem falhou. A restauração do clipboard original é tentada antes de devolver o erro.
     Paste(E),
 }
 
@@ -236,8 +235,8 @@ impl<E: fmt::Display> fmt::Display for PasteError<E> {
 impl<E: fmt::Debug + fmt::Display> std::error::Error for PasteError<E> {}
 
 /// Sequência não destrutiva: guarda o clipboard, põe `text`, chama `paste`, espera (`wait`, no app
-/// [`RESTORE_DELAY`]) e restaura o conteúdo anterior. Se `paste` falhar, não restaura: o texto
-/// fica no clipboard.
+/// [`RESTORE_DELAY`]) e restaura o conteúdo anterior. Se `paste` falhar, também tenta restaurar
+/// o conteúdo original antes de devolver o erro.
 pub fn paste_preserving_clipboard<C, E>(
     clipboard: &mut C,
     text: &str,
@@ -252,12 +251,19 @@ where
     }
     let backup = ClipboardBackup::take(clipboard);
     clipboard.set_text(text).map_err(PasteError::SetText)?;
-    paste().map_err(PasteError::Paste)?;
-    wait();
-    Ok(match backup.restore(clipboard) {
-        Ok(()) => PasteOutcome::Pasted,
-        Err(e) => PasteOutcome::PastedNotRestored(e),
-    })
+    match paste() {
+        Ok(()) => {
+            wait();
+            Ok(match backup.restore(clipboard) {
+                Ok(()) => PasteOutcome::Pasted,
+                Err(e) => PasteOutcome::PastedNotRestored(e),
+            })
+        }
+        Err(error) => {
+            let _ = backup.restore(clipboard);
+            Err(PasteError::Paste(error))
+        }
+    }
 }
 
 #[cfg(test)]
@@ -554,15 +560,18 @@ mod tests {
     }
 
     #[test]
-    fn failed_paste_keeps_transcribed_text() {
+    fn failed_paste_restores_original_clipboard() {
         let mut clipboard = FakeClipboard::with(ClipboardBackup::Text("do usuário".into()));
         assert_eq!(
             run(&mut clipboard, "ditado", Err("sem wtype")),
             (Err(PasteError::Paste("sem wtype")), 1, 0)
         );
-        // Sem espera nem restauração depois da falha.
-        assert_eq!(clipboard.content, ClipboardBackup::Text("ditado".into()));
-        assert_eq!(clipboard.log, ["set_text ditado"]);
+        // Não há espera depois da falha, mas o conteúdo anterior volta ao clipboard.
+        assert_eq!(
+            clipboard.content,
+            ClipboardBackup::Text("do usuário".into())
+        );
+        assert_eq!(clipboard.log, ["set_text ditado", "set_text do usuário"]);
     }
 
     #[test]

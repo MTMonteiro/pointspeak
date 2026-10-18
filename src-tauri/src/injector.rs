@@ -11,8 +11,8 @@
 //! - **Colagem:** enigo no Windows e no X11 (XTest via x11rb, sem libxdo). No Wayland tenta `wtype`,
 //!   depois `ydotool` (precisa do `ydotoold` rodando), achados no `PATH`, e por fim o enigo (que só
 //!   alcança apps do XWayland).
-//! - **Falha:** se nenhum método colar, o texto **fica** no clipboard e o erro vira
-//!   `ErrorKind::PasteFailed` ("Cole com Ctrl+V").
+//! - **Falha:** se nenhum método colar, tenta restaurar o clipboard original e devolve
+//!   `ErrorKind::PasteFailed` ("Falha ao colar").
 //! - **Thread:** arboard e enigo bloqueiam, então tudo roda numa thread própria
 //!   (`pointspeak-injector`), criada na primeira chamada. Ela mantém o `Clipboard` vivo: no X11 o
 //!   conteúdo do clipboard só existe enquanto o processo que o pôs o serve, então o texto (e o
@@ -36,7 +36,7 @@ use pointspeak_core::injector::{
 };
 use thiserror::Error;
 
-/// Falha ao colar. Em todo caso o HUD mostra "Cole com Ctrl+V".
+/// Falha ao colar. O clipboard original é restaurado quando o clipboard permite.
 #[derive(Debug, Error)]
 pub enum InjectError {
     #[error("Clipboard indisponível: {0}")]

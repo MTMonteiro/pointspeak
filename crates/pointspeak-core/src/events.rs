@@ -63,7 +63,7 @@ pub enum ErrorKind {
     ModelNotFound,
     /// A inferência falhou.
     TranscriptionFailed,
-    /// A colagem falhou; o texto ficou no clipboard.
+    /// A colagem falhou; a restauração do clipboard original foi tentada.
     PasteFailed,
     /// Nenhuma fala detectada.
     NoSpeech,
@@ -84,7 +84,7 @@ impl ErrorKind {
             ErrorKind::MicrophoneUnavailable => "Microfone indisponível",
             ErrorKind::ModelNotFound => "Modelo não encontrado",
             ErrorKind::TranscriptionFailed => "Falha na transcrição",
-            ErrorKind::PasteFailed => "Cole com Ctrl+V",
+            ErrorKind::PasteFailed => "Falha ao colar",
             ErrorKind::NoSpeech => "Nada foi ouvido",
         }
     }

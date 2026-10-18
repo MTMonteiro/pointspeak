@@ -23,12 +23,12 @@ export const ERROR_VISIBLE_MS: Readonly<Record<string, number>> = {
   "Microfone indisponível": 3000,
   "Modelo não encontrado": 3000,
   "Falha na transcrição": 3000,
-  "Cole com Ctrl+V": 4000,
+  "Falha ao colar": 4000,
   "Nada foi ouvido": 2000,
 };
 
 const ERROR_FALLBACK = "Microfone indisponível";
-const PASTE_ERROR_LABEL = "Não deu para colar; o texto está copiado, cole com Ctrl+V";
+const PASTE_ERROR_LABEL = "Não foi possível colar o texto";
 const BAR_WEIGHTS = [0.55, 0.8, 1, 0.8, 0.55] as const;
 const INITIAL_BAR_SCALES = BAR_WEIGHTS.map(() => 0.2);
 
@@ -188,7 +188,7 @@ export function HudPill({
   const errorMessage = message ?? ERROR_FALLBACK;
   const accessibleLabel =
     state === "error"
-      ? errorMessage === "Cole com Ctrl+V"
+      ? errorMessage === "Falha ao colar"
         ? PASTE_ERROR_LABEL
         : errorMessage
       : state === "recording"

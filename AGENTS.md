@@ -32,6 +32,7 @@ o que um agente ou uma pessoa precisa para trabalhar aqui fica neste repositóri
 - Validação manual (tela, microfone, atalho, clipboard) no Windows e no Linux X11/Wayland: `docs/checklist-manual.md`.
 - Código Windows-only fica atrás de `cfg(windows)` e não pode quebrar os checks Linux. Fase que adicionar dependência nativa (whisper-rs, ort) roda o `build-windows.sh` antes de entregar.
 - Nenhum teste pode depender de tela, microfone ou rede; lógica pura vai em `crates/pointspeak-core`.
+- Testes integrados do núcleo ficam em `crates/pointspeak-core/tests/`; contratos Rust↔TypeScript versionados ficam em `src/test/fixtures/rust-contracts.json` e são conferidos por `cargo test` e Vitest. Para regenerar após revisar uma mudança intencional: `cargo test -p pointspeak-core --test contract_fixtures write_rust_contract_fixtures -- --ignored`.
 - Design e UI: o visual segue `docs/design/` (DESIGN.md e telas); a persona `designer` mantém essa pasta.
 - A janela de Configurações fica em `src/settings/`: `Settings.tsx`, `Settings.css`, `useConfig.ts` e os controles base em `components/`.
 - A seção Hardware exibe o detalhe detectado nos cartões e usa `fallbackReason` de `engine://status` no aviso de fallback; `Tentar de novo` atualiza a lista de hardware e o estado atual do motor.

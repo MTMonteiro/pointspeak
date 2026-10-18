@@ -30,10 +30,12 @@ Onde fica cada coisa (atualize quando criar ou mover pastas).
     - `src/settings/SettingsModelsHardware.test.tsx`: integração das seções Modelos e Hardware com comandos/eventos Tauri simulados
     - `src/settings/components/`: componentes base acessíveis (Button, Select, RadioCard, Segmented, Switch, Progress, LevelMeter, Callout, Badge, KeyCap e Skeleton)
     - `Settings.test.tsx` e `components/components.test.tsx`: testes de integração da janela e dos componentes base
-  - `src/test/`: setup do Vitest e mock de eventos e comandos de `@tauri-apps/api`
+  - `src/test/`: setup do Vitest e mock de eventos e comandos de `@tauri-apps/api`; `rust-contract.test.tsx` valida as fixtures nos consumidores HUD e Settings
+    - `src/test/fixtures/rust-contracts.json`: contratos JSON compartilhados, gerados por serde
   - `src/styles.css`: entrada do Tailwind e tokens visuais compartilhados (temas claro/escuro)
 - `Cargo.toml`, `Cargo.lock`, `rust-toolchain.toml`: workspace Cargo (`src-tauri` e `crates/pointspeak-core`)
 - `crates/pointspeak-core/`: núcleo em Rust puro, testável sem sistema
+  - `tests/`: fluxos integrados (`dictation_flow.rs`), casos de borda (`edge_cases.rs`) e serialização/fixtures (`contract_fixtures.rs`)
   - `src/audio.rs`: pipeline de áudio puro (downmix, resample 16 kHz com `rubato`, RMS/`level`, `SilenceDetector`, `RecordingBuffer`, `CapturePipeline`) e `MicrophoneInfo`
   - `src/config.rs`: `AppConfig` (padrões, serde camelCase, `validate()`/`sanitized()`) e `ModelId`
   - `src/dictation.rs`: máquina do ditado (`Dictation`: `Input` → `Effect`), tempos de dispensa, `RecordedAudio` (sem fala) e `TrayStatus` (textos da bandeja)
