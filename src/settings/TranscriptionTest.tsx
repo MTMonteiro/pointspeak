@@ -27,7 +27,7 @@ const LANGUAGE_LABELS: Record<TranscriptionTestResult["language"], string> = {
   en: "English",
   auto: "Automático",
 };
-const NOT_READY_HINT = "Baixe e carregue um modelo na seção Modelo para testar a transcrição.";
+const NOT_READY_HINT = "Baixe e carregue um modelo na seção Modelos para testar a transcrição.";
 
 type Phase = "idle" | "starting" | "recording" | "transcribing";
 
@@ -70,6 +70,7 @@ export function TranscriptionTest({
   const phaseRef = useRef<Phase>("idle");
   const hotkeySuspended = useRef(false);
   const mounted = useRef(true);
+  const visibleRef = useRef(visible);
   const onBusyRef = useRef(onBusyChange);
   useEffect(() => {
     onBusyRef.current = onBusyChange;
@@ -124,9 +125,10 @@ export function TranscriptionTest({
     try {
       await invoke("suspend_hotkey", { suspended: true });
       await invoke("start_transcription_test", { microphone });
-      if (!mounted.current) {
-        phaseRef.current = "recording";
+      phaseRef.current = "recording";
+      if (!mounted.current || !visibleRef.current) {
         discard();
+        if (mounted.current) changePhase("idle");
         return;
       }
       changePhase("recording");
@@ -160,11 +162,12 @@ export function TranscriptionTest({
   }, [discard, finish]);
 
   useEffect(() => {
-    if (!visible) {
+    visibleRef.current = visible;
+    if (!visible && phaseRef.current === "recording") {
       discard();
-      if (phaseRef.current === "idle") onBusyRef.current(false);
+      changePhase("idle");
     }
-  }, [visible, discard]);
+  }, [visible, discard, changePhase]);
 
   useEffect(() => {
     if (phase !== "recording") return;
@@ -202,7 +205,7 @@ export function TranscriptionTest({
     <div className="settings-field">
       <span className="settings-label" id="transcription-test-label">Teste de transcrição</span>
       <p className="settings-hint" id="transcription-test-hint">
-        Clique em Testar transcrição, fale uma frase e clique em Parar. O texto aparece aqui e não é colado em lugar nenhum.
+        Clique em Testar transcrição, fale uma frase e clique em Parar e transcrever. O texto aparece aqui e não é colado em lugar nenhum.
       </p>
       {showBlocked && <p className="settings-hint" id="transcription-test-blocked">{blockedHint}</p>}
       {(recording || transcribing) && (

@@ -144,7 +144,7 @@ describe("TranscriptionTest", () => {
     await openSettings();
     const button = await screen.findByRole("button", { name: "Testar transcrição" });
     await waitFor(() => expect(button).toBeDisabled());
-    expect(screen.getByText("Baixe e carregue um modelo na seção Modelo para testar a transcrição.")).toBeInTheDocument();
+    expect(screen.getByText("Baixe e carregue um modelo na seção Modelos para testar a transcrição.")).toBeInTheDocument();
   });
 
   it("transcreve sozinho quando o backend avisa o limite", async () => {
@@ -154,6 +154,29 @@ describe("TranscriptionTest", () => {
     act(() => emitTauriEvent("settings://transcription-test-ended", { reason: "maxDuration" }));
     expect(await screen.findByDisplayValue("olá mundo")).toBeInTheDocument();
     expect(callsFor("stop_transcription_test")).toHaveLength(1);
+  });
+
+  it("trocar de seção gravando descarta o teste e volta ao estado inicial", async () => {
+    await openSettings();
+    fireEvent.click(screen.getByRole("button", { name: "Testar transcrição" }));
+    await screen.findByRole("button", { name: "Parar e transcrever" });
+    fireEvent.click(screen.getByRole("link", { name: /Idioma/ }));
+    fireEvent.click(screen.getByRole("link", { name: /Microfone/ }));
+    expect(await screen.findByRole("button", { name: "Testar transcrição" })).toBeEnabled();
+    expect(screen.queryByRole("button", { name: "Parar e transcrever" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Testar microfone" })).toBeEnabled();
+    expect(callsFor("stop_transcription_test")).toHaveLength(1);
+    await waitFor(() => expect(callsFor("suspend_hotkey").at(-1)?.args).toEqual({ suspended: false }));
+  });
+
+  it("janela fechada gravando: mostra o motivo e devolve o atalho", async () => {
+    mockTauri({ stop_transcription_test: () => Promise.reject("O teste foi interrompido porque a janela foi fechada.") });
+    await openSettings();
+    fireEvent.click(screen.getByRole("button", { name: "Testar transcrição" }));
+    await screen.findByRole("button", { name: "Parar e transcrever" });
+    act(() => emitTauriEvent("settings://transcription-test-ended", { reason: "windowClosed" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("O teste foi interrompido porque a janela foi fechada.");
+    await waitFor(() => expect(callsFor("suspend_hotkey").at(-1)?.args).toEqual({ suspended: false }));
   });
 
   it("ao desmontar gravando, chama stop e descarta o resultado", async () => {
