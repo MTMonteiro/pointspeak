@@ -7,7 +7,10 @@ clipboard real). Marque cada item em cada plataforma: **Win** (instalador .exe),
 Como rodar:
 - **Windows:** gere o instalador no Linux com `./scripts/build-windows.sh` e copie
   `target/x86_64-pc-windows-msvc/release/bundle/nsis/PointSpeak_<versão>_x64-setup.exe`.
-- **Linux:** `npm run build && cargo build -p pointspeak --release` e rode `target/release/pointspeak`
+- **Linux (pacote):** gere com `./scripts/build-linux.sh` e instale o .deb
+  (`sudo apt install ./target/release/bundle/deb/PointSpeak_<versão>_amd64.deb`) ou rode o AppImage
+  (`chmod +x PointSpeak_<versão>_amd64.AppImage`). Abra `pointspeak` num terminal para ver os logs (stderr).
+- **Linux (dev):** `npm run build && cargo build -p pointspeak --release` e rode `target/release/pointspeak`
   num terminal (os logs saem no stderr). No Wayland, instale `wtype` (ou `ydotool` com o `ydotoold` rodando).
 
 As configurações de Microfone, Modelos, Hardware, Idioma e Atalho ficam na janela de Configurações. Confira os
@@ -113,6 +116,9 @@ a CPU).
 | 8.4 | Selecione `NPU (DirectML)` com o `onnxruntime.dll` renomeado (8.3) e dite algo | Cartão DirectML indisponível; o ditado funciona na CPU (whisper.cpp) | ☐ | — | — |
 | 8.5 | Linux sem ONNX Runtime: abra Configurações → Hardware | DirectML `Disponível só no Windows`; OpenVINO e CUDA `ONNX Runtime não encontrado`; Vulkan `Não incluído nesta versão` | — | ☐ | ☐ |
 | 8.6 | Linux: `./scripts/fetch-onnxruntime.sh linux` e rode com `ORT_DYLIB_PATH=$PWD/target/onnxruntime/linux-x64/libonnxruntime.so target/release/pointspeak` | OpenVINO `Nenhum dispositivo Intel compatível` e CUDA `Nenhuma GPU NVIDIA encontrada` (o pacote oficial só traz a CPU); sem erro de carregamento no terminal | — | ☐ | ☐ |
+| 8.6a | Linux com o .deb instalado (sem `ORT_DYLIB_PATH`): `dpkg -L point-speak \| grep -E 'onnxruntime\|silero'` e abra Configurações → Hardware | Lista `/usr/lib/PointSpeak/libonnxruntime.so`, `/usr/lib/PointSpeak/resources/silero_vad.onnx` e as licenças em `/usr/lib/PointSpeak/licenses/`; o ONNX Runtime CPU é detectado: OpenVINO `Nenhum dispositivo Intel compatível` e CUDA `Nenhuma GPU NVIDIA encontrada` (não `ONNX Runtime não encontrado`), CPU `Sempre disponível`; no terminal nenhum `ONNX Runtime não encontrado` | — | ☐ | ☐ |
+| 8.6b | Linux: rode o AppImage (sem `ORT_DYLIB_PATH`) e repita o 8.6a na seção Hardware | Mesmo resultado do 8.6a; `[pointspeak] Silero VAD carregado de /tmp/.mount_…/usr/lib/PointSpeak/resources/silero_vad.onnx` no terminal logo depois de abrir | — | ☐ | ☐ |
+| 8.6c | Linux Wayland com o .deb: `apt install` sem `--no-install-recommends` | `wtype` e `ydotool` instalados junto (Recommends) | — | — | ☐ |
 | 8.7 | **Silero VAD:** abra o app num terminal e confira a saída | `[pointspeak] Silero VAD carregado de …\resources\silero_vad.onnx` (Linux: com o `ORT_DYLIB_PATH` do 8.6); no Windows o arquivo fica em `resources\` na pasta de instalação e a licença em `licenses\silero_vad-LICENSE.txt` | ☐ | ☐ | ☐ |
 | 8.8 | Com o VAD ativo: Toggle, fale uma frase com pausas curtas entre as palavras e fique calado | Não para nas pausas curtas; para ~2,5 s (`silenceTimeoutMs`) depois da última palavra e cola | ☐ | ☐ | ☐ |
 | 8.9 | Com o VAD ativo: Toggle num ambiente com ruído contínuo (ventilador, música baixa sem voz) e não fale; pare com o atalho | HUD mostra `Nada foi ouvido` (o ruído não conta como fala); as barras do HUD continuam reagindo ao ruído | ☐ | ☐ | ☐ |

@@ -13,6 +13,7 @@ Onde fica cada coisa (atualize quando criar ou mover pastas).
     - `telas/hud.html`, `telas/settings.html`: protótipos estáticos (abrem no navegador, sem build)
   - `docs/checklist-manual.md`: roteiro de validação manual no Windows (.exe) e no Linux X11/Wayland
   - `docs/memoria/`: aprendizados entre tasks
+- `scripts/build-linux.sh`: gera os pacotes Linux (.deb e AppImage) com o `libonnxruntime.so` (CPU) e o Silero VAD e confere o conteúdo
 - `scripts/build-windows.sh`: gera o instalador Windows (.exe NSIS) por compilação cruzada (chama o `fetch-onnxruntime.sh` e põe as DLLs do ONNX Runtime no instalador)
 - `scripts/fetch-onnxruntime.sh`: baixa o ONNX Runtime oficial (Windows DirectML / Linux CPU) com SHA-256 fixado para `target/onnxruntime/<plataforma>/`
 - `scripts/setup-linux.sh`: instala as libs de sistema do Linux (apt, idempotente)
@@ -35,7 +36,7 @@ Onde fica cada coisa (atualize quando criar ou mover pastas).
   - `src/styles.css`: entrada do Tailwind e tokens visuais compartilhados (temas claro/escuro)
 - `Cargo.toml`, `Cargo.lock`, `rust-toolchain.toml`: workspace Cargo (`src-tauri` e `crates/pointspeak-core`)
 - `crates/pointspeak-core/`: núcleo em Rust puro, testável sem sistema
-  - `tests/`: fluxos integrados (`dictation_flow.rs`), casos de borda (`edge_cases.rs`) e serialização/fixtures (`contract_fixtures.rs`)
+  - `tests/`: fluxos integrados (`dictation_flow.rs`), casos de borda (`edge_cases.rs`), serialização/fixtures (`contract_fixtures.rs`) e recursos dos overlays de empacotamento (`bundle_resources.rs`)
   - `src/audio.rs`: pipeline de áudio puro (downmix, resample 16 kHz com `rubato`, RMS/`level`, `SilenceDetector`, `RecordingBuffer`, `CapturePipeline`) e `MicrophoneInfo`
   - `src/config.rs`: `AppConfig` (padrões, serde camelCase, `validate()`/`sanitized()`) e `ModelId`
   - `src/dictation.rs`: máquina do ditado (`Dictation`: `Input` → `Effect`), tempos de dispensa, `RecordedAudio` (sem fala) e `TrayStatus` (textos da bandeja)
@@ -52,7 +53,8 @@ Onde fica cada coisa (atualize quando criar ou mover pastas).
   - `src/whisper_onnx/`: núcleo puro da engine Whisper em ONNX: `mel.rs` (log-mel de 80/128 bandas, `LogMel`), `tokenizer.rs` (`WhisperVocab`: IDs especiais e de idioma, sequência inicial, decodificação BPE byte-level), `decoder.rs` (trait `DecoderStep`, `greedy_decode`, detecção de idioma) e `mod.rs` (trait `WhisperModel`, `transcribe_chunks` em trechos de 30 s)
   - `src/transcriber.rs`: trait `Transcriber`, `TranscribeOptions`, `TranscribeError`, limpeza do texto (`clean_text`, `join_segments`), `transcribe` (descarta áudio < 300 ms), `EngineSlot` (hot-swap pela `EngineKey` modelo + backend) e `FakeTranscriber` para testes
 - `src-tauri/`: app Tauri v2 (crate `pointspeak`)
-  - `tauri.conf.json`: identificador, janelas `settings` e `hud`, bundle (nsis, deb, appimage; WebView2 `embedBootstrapper` no Windows)
+  - `tauri.conf.json`: identificador, janelas `settings` e `hud`, bundle (nsis, deb, appimage; WebView2 `embedBootstrapper` no Windows; `Depends`/`Recommends` do .deb em `bundle.linux.deb`)
+  - `tauri.onnxruntime-linux.conf.json`: overlay usado só pelo `build-linux.sh` (`--config`), com `libonnxruntime.so` e a licença em `bundle.resources`
   - `tauri.onnxruntime-windows.conf.json`: overlay usado só pelo `build-windows.sh` (`--config`), com `onnxruntime.dll`, `DirectML.dll` e licenças em `bundle.resources`
   - `capabilities/`: permissões das janelas
   - `resources/`: recursos do bundle (`silero_vad.onnx`, Silero VAD v5.1.2, e `silero_vad-LICENSE.txt`, MIT)
