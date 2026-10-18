@@ -74,6 +74,7 @@ Abra um editor de texto (Bloco de Notas / gedit / Kate) com o cursor numa linha 
 | 5.7 | Sem microfone (desplugar/desativar) e ditar | HUD `Microfone indisponível` por ~3 s | ☐ | ☐ | ☐ |
 | 5.8 | Desplugar o microfone USB no meio da gravação | HUD `Microfone indisponível`; nada colado | ☐ | ☐ | ☐ |
 | 5.9 | Apagar o arquivo do modelo ativo na pasta e ditar | HUD `Modelo não encontrado` por ~3 s | ☐ | ☐ | ☐ |
+| 5.10 | Alternar tema claro/escuro e ativar "Reduzir movimento" no sistema; conferir gravação, transcrição, sucesso e erro | Pílula continua legível; barras em três degraus sem transição, três pontos estáticos na transcrição e fade dentro do tempo do backend | ☐ | ☐ | ☐ |
 
 ## 6. Bandeja e atalho
 
