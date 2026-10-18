@@ -40,7 +40,8 @@ use pointspeak_core::injector::{
 };
 use thiserror::Error;
 
-/// Falha ao colar (ou ao copiar, no modo `clipboard`). O clipboard original é restaurado quando o clipboard permite.
+/// Falha ao colar (ou ao copiar, no modo `clipboard`). Ao colar, o clipboard original é restaurado
+/// quando o clipboard permite.
 #[derive(Debug, Error)]
 pub enum InjectError {
     #[error("Clipboard indisponível: {0}")]
