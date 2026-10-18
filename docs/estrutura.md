@@ -26,7 +26,7 @@ Onde fica cada coisa (atualize quando criar ou mover pastas).
   - `src/lib/contract.ts`: nomes dos eventos e tipos dos payloads compartilhados com o backend (HUD, Configurações, modelos e hardware)
   - `src/settings/`: janela de Configurações (`Settings.tsx`, layout/seleção de seção; `Settings.css`; `useConfig.ts` para carregar e salvar `AppConfig`)
     - `src/settings/ModelSection.tsx`: catálogo de modelos, progresso `models://progress`, ativação, remoção e pasta
-    - `src/settings/HardwareSection.tsx`: cartões de `list_backends`, seleção e status/fallback do motor
+    - `src/settings/HardwareSection.tsx`: cartões de `list_backends` com detalhe detectado, seleção, causa real do fallback via `EngineStatus.fallbackReason` e recarga da detecção/estado do motor
     - `src/settings/SettingsModelsHardware.test.tsx`: integração das seções Modelos e Hardware com comandos/eventos Tauri simulados
     - `src/settings/components/`: componentes base acessíveis (Button, Select, RadioCard, Segmented, Switch, Progress, LevelMeter, Callout, Badge, KeyCap e Skeleton)
     - `Settings.test.tsx` e `components/components.test.tsx`: testes de integração da janela e dos componentes base

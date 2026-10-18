@@ -27,12 +27,14 @@ export function HardwareSection({
   error,
   engineStatus,
   onBackendChange,
+  onRefreshEngineStatus,
 }: {
   config: AppConfig;
   ready: boolean;
   error?: string;
   engineStatus: EngineStatus | null;
   onBackendChange: (backend: Backend) => void;
+  onRefreshEngineStatus: () => Promise<void>;
 }) {
   const [backends, setBackends] = useState<BackendOption[]>([]);
   const [listState, setListState] = useState<ListState>("loading");
@@ -50,6 +52,10 @@ export function HardwareSection({
     }
   }, []);
 
+  const retry = useCallback(() => {
+    void Promise.all([loadBackends(), onRefreshEngineStatus()]);
+  }, [loadBackends, onRefreshEngineStatus]);
+
   useEffect(() => {
     let disposed = false;
     void Promise.resolve().then(() => {
@@ -59,13 +65,12 @@ export function HardwareSection({
   }, [loadBackends]);
 
   const selectedBackend = config.backend === "auto" ? engineStatus?.backend : config.backend;
-  const selectedOption = backends.find((option) => option.backend === config.backend);
   const chosenFallback = config.backend !== "auto" && config.backend !== "cpu" && engineStatus?.backend === "cpu";
   // In auto mode only the engine knows a fallback happened (e.g. DirectML did not start).
   const autoFallback = config.backend === "auto" && engineStatus?.backend === "cpu" && Boolean(engineStatus.fallbackReason);
   const fallback = chosenFallback || autoFallback;
   const fallbackLabel = config.backend === "auto" ? undefined : BACKEND_LABELS[config.backend];
-  const fallbackReason = engineStatus?.fallbackReason ?? selectedOption?.reason ?? "O motor não informou a causa.";
+  const fallbackReason = engineStatus?.fallbackReason ?? "O motor não informou a causa.";
 
   return (
     <div className="settings-hardware">
@@ -81,7 +86,7 @@ export function HardwareSection({
       {listState === "error" && (
         <Callout tone="error">
           <p>{loadError}</p>
-          <Button onClick={() => void loadBackends()}>Tentar novamente</Button>
+          <Button onClick={retry}>Tentar novamente</Button>
         </Callout>
       )}
 
@@ -116,7 +121,7 @@ export function HardwareSection({
           {fallback && (
             <Callout
               tone="warning"
-              action={<Button variant="ghost" onClick={() => void loadBackends()}>Tentar de novo</Button>}
+              action={<Button variant="ghost" onClick={retry}>Tentar de novo</Button>}
             >
               <p>A aceleração{fallbackLabel ? ` ${fallbackLabel}` : ""} não iniciou. O PointSpeak está usando a CPU. Motivo: {fallbackReason}</p>
             </Callout>

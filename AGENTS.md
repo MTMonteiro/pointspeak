@@ -34,6 +34,7 @@ o que um agente ou uma pessoa precisa para trabalhar aqui fica neste repositóri
 - Nenhum teste pode depender de tela, microfone ou rede; lógica pura vai em `crates/pointspeak-core`.
 - Design e UI: o visual segue `docs/design/` (DESIGN.md e telas); a persona `designer` mantém essa pasta.
 - A janela de Configurações fica em `src/settings/`: `Settings.tsx`, `Settings.css`, `useConfig.ts` e os controles base em `components/`.
+- A seção Hardware exibe o detalhe detectado nos cartões e usa `fallbackReason` de `engine://status` no aviso de fallback; `Tentar de novo` atualiza a lista de hardware e o estado atual do motor.
 - Mudou o plano, a stack, os comandos ou a organização das pastas: atualize `docs/` e este arquivo no mesmo PR.
 - Nunca versione segredos (`.env`, chaves, tokens); use variáveis de ambiente.
 <!-- fabrica:fim -->

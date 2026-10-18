@@ -31,6 +31,10 @@ export function getInvokeCalls() {
   return [...invokeCalls];
 }
 
+export function getInvokeCallsFor(command: string) {
+  return invokeCalls.filter((call) => call.command === command);
+}
+
 vi.mock("@tauri-apps/api/event", () => ({
   listen: vi.fn((event: string, handler: Handler) => {
     const set = handlers.get(event) ?? new Set<Handler>();

@@ -1,7 +1,7 @@
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it } from "vitest";
 import { Settings } from "./Settings";
-import { emitTauriEvent, getInvokeCalls, setInvokeHandler } from "../test/tauri-mock";
+import { emitTauriEvent, getInvokeCallsFor, setInvokeHandler } from "../test/tauri-mock";
 
 type TestConfig = {
   microphone: string | null;
@@ -79,15 +79,11 @@ const MODEL_LIST = [
 ];
 const BACKENDS = [
   { backend: "directml", available: false, reason: "Disponível só no Windows" },
-  { backend: "openvino", available: false, reason: "Nenhum dispositivo Intel compatível" },
+  { backend: "openvino", available: true, detail: "Intel Core Ultra 7 258V com NPU" },
   { backend: "vulkan", available: true, detail: "Driver Vulkan encontrado" },
   { backend: "cuda", available: false, reason: "Nenhuma GPU NVIDIA encontrada" },
   { backend: "cpu", available: true, detail: "Sempre disponível" },
 ];
-
-function callsFor(command: string) {
-  return getInvokeCalls().filter((call) => call.command === command);
-}
 
 function mockTauri(options: {
   config?: Partial<TestConfig>;
@@ -188,12 +184,12 @@ describe("seção Modelos", () => {
     await openSection("Modelos");
     const small = await screen.findByRole("article", { name: "small" });
     fireEvent.click(within(small).getByRole("button", { name: "Baixar" }));
-    await waitFor(() => expect(callsFor("download_model")).toContainEqual(expect.objectContaining({ args: { id: "small" } })));
+    await waitFor(() => expect(getInvokeCallsFor("download_model")).toContainEqual(expect.objectContaining({ args: { id: "small" } })));
 
     act(() => emitTauriEvent("models://progress", { id: "small", state: "downloading", done: 205_520_896, total: 487_601_967 }));
     expect(await within(small).findByText("42 % · 196 de 466 MB")).toBeInTheDocument();
     fireEvent.click(within(small).getByRole("button", { name: "Cancelar" }));
-    await waitFor(() => expect(callsFor("cancel_download")).toContainEqual(expect.objectContaining({ args: { id: "small" } })));
+    await waitFor(() => expect(getInvokeCallsFor("cancel_download")).toContainEqual(expect.objectContaining({ args: { id: "small" } })));
   });
 
   it("mostra verificação indeterminada quando o evento muda para verifying", async () => {
@@ -216,7 +212,7 @@ describe("seção Modelos", () => {
 
     fireEvent.click(within(small).getByRole("button", { name: "Remover" }));
     fireEvent.click(within(small).getByRole("button", { name: "Confirmar remoção" }));
-    await waitFor(() => expect(callsFor("remove_model")).toContainEqual(expect.objectContaining({ args: { id: "small" } })));
+    await waitFor(() => expect(getInvokeCallsFor("remove_model")).toContainEqual(expect.objectContaining({ args: { id: "small" } })));
   });
 
   it("mantém o estado pronto quando o backend recusa a remoção", async () => {
@@ -233,13 +229,13 @@ describe("seção Modelos", () => {
   it("abre a pasta dos modelos pelo comando Tauri", async () => {
     await openSection("Modelos");
     fireEvent.click(await screen.findByRole("button", { name: "Abrir pasta" }));
-    await waitFor(() => expect(callsFor("open_models_dir")).toHaveLength(1));
+    await waitFor(() => expect(getInvokeCallsFor("open_models_dir")).toHaveLength(1));
   });
 
   it("define o modelo ativo pelo comando e atualiza o status pelo evento do motor", async () => {
     await openSection("Modelos");
     fireEvent.click(await within(await screen.findByRole("article", { name: "small" })).findByRole("button", { name: "Usar este" }));
-    await waitFor(() => expect(callsFor("set_active_model")).toContainEqual(expect.objectContaining({ args: { id: "small" } })));
+    await waitFor(() => expect(getInvokeCallsFor("set_active_model")).toContainEqual(expect.objectContaining({ args: { id: "small" } })));
     act(() => emitTauriEvent("engine://status", { model: "small", status: "loaded", backend: "cpu", paused: false }));
     expect(await screen.findByText("Pronto · small · CPU")).toBeInTheDocument();
   });
@@ -278,6 +274,54 @@ describe("seção Hardware", () => {
     )).toBeInTheDocument();
   });
 
+  it("mostra fallback mesmo com backend solicitado disponível e mantém CPU no rodapé", async () => {
+    mockTauri({
+      config: { backend: "openvino" },
+      engine: { ...ENGINE, fallbackReason: "OpenVINO não iniciou: dispositivo ocupado" },
+    });
+    await openSection("Hardware");
+
+    expect(await screen.findByText(
+      "A aceleração OpenVINO (Intel) não iniciou. O PointSpeak está usando a CPU. Motivo: OpenVINO não iniciou: dispositivo ocupado",
+    )).toBeInTheDocument();
+    expect(screen.getByText("Intel Core Ultra 7 258V com NPU")).toBeInTheDocument();
+    expect(screen.getByText("Pronto · base · CPU")).toBeInTheDocument();
+  });
+
+  it("mostra os novos motivos de indisponibilidade nos cartões", async () => {
+    mockTauri({
+      backends: [
+        { backend: "directml", available: false, reason: "ONNX Runtime não encontrado" },
+        { backend: "openvino", available: false, reason: "Não incluído nesta versão" },
+        ...BACKENDS.slice(2),
+      ],
+    });
+    await openSection("Hardware");
+
+    expect(screen.getByText("ONNX Runtime não encontrado")).toBeInTheDocument();
+    expect(screen.getByText("Não incluído nesta versão")).toBeInTheDocument();
+  });
+
+  it("recarrega os backends e o estado do motor ao tentar de novo", async () => {
+    let engine: typeof ENGINE = { ...ENGINE, fallbackReason: "OpenVINO não iniciou: dispositivo ocupado" };
+    mockTauri({
+      config: { backend: "openvino" },
+      overrides: { get_engine_status: () => engine },
+    });
+    await openSection("Hardware");
+
+    expect(await screen.findByText(/OpenVINO não iniciou: dispositivo ocupado/)).toBeInTheDocument();
+    engine = { ...ENGINE, backend: "openvino", fallbackReason: undefined };
+    fireEvent.click(screen.getByRole("button", { name: "Tentar de novo" }));
+
+    await waitFor(() => {
+      expect(screen.queryByText(/O PointSpeak está usando a CPU/)).not.toBeInTheDocument();
+      expect(screen.getByRole("radio", { name: /OpenVINO/ })).toBeChecked();
+    });
+    expect(getInvokeCallsFor("list_backends")).toHaveLength(2);
+    expect(getInvokeCallsFor("get_engine_status")).toHaveLength(2);
+  });
+
   it("mostra o fallback no modo automático só quando o motor informa o motivo", async () => {
     await openSection("Hardware");
     expect(screen.queryByText(/O PointSpeak está usando a CPU/)).not.toBeInTheDocument();
@@ -290,8 +334,8 @@ describe("seção Hardware", () => {
   it("salva o backend escolhido com set_config", async () => {
     await openSection("Hardware");
     fireEvent.click(screen.getByRole("radio", { name: /Vulkan \(GPU\)/ }));
-    await waitFor(() => expect(callsFor("set_config")).toHaveLength(1));
-    expect((callsFor("set_config")[0]!.args?.config as TestConfig).backend).toBe("vulkan");
+    await waitFor(() => expect(getInvokeCallsFor("set_config")).toHaveLength(1));
+    expect((getInvokeCallsFor("set_config")[0]!.args?.config as TestConfig).backend).toBe("vulkan");
   });
 
   it("mostra Detectando hardware enquanto o catálogo carrega", async () => {
