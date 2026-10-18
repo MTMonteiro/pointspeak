@@ -4,7 +4,9 @@ use std::path::PathBuf;
 
 use pointspeak_core::config::{AppConfig, Backend, Language, ModelId, OutputMode};
 use pointspeak_core::dictation::ModelStatus;
-use pointspeak_core::engine::{DeviceFallback, DmlDevice, OnnxLoadError};
+use pointspeak_core::engine::{
+    DeviceFallback, DmlDevice, EngineKind, EnginePlan, EngineRuntime, GgmlGpu, OnnxLoadError,
+};
 use pointspeak_core::events::{
     AudioLevelPayload, EngineStatusPayload, ErrorKind, ModelProgressPayload, StateChangedPayload,
 };
@@ -15,7 +17,11 @@ use pointspeak_core::models::{
     DownloadError, DownloadEvent, ModelRegistry, ModelState, ModelVariant,
 };
 use pointspeak_core::settings::BackendOption;
+use pointspeak_core::transcription_test::{
+    TestAudio, TranscriptionTestEndReason, TranscriptionTestEndedPayload, TranscriptionTestResult,
+};
 use serde_json::{json, Value};
+use std::time::Duration;
 
 fn fixtures_path() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../src/test/fixtures/rust-contracts.json")
@@ -122,6 +128,42 @@ fn current_contracts() -> Value {
         done: 44_385_440,
         total: ModelId::Base.info().size_bytes,
     };
+    let test_plan = EnginePlan {
+        model: ModelId::Base,
+        requested: Backend::Directml,
+        backend: Backend::Directml,
+        unavailable: None,
+        onnx_ready: true,
+        ggml_ready: true,
+        gpu: GgmlGpu::default(),
+    };
+    let test_audio = TestAudio {
+        samples: vec![0.5; 24_000],
+        sample_rate: 48_000,
+    };
+    let npu = EngineRuntime {
+        backend: Backend::Directml,
+        kind: EngineKind::Onnx,
+        fallback: None,
+        device: Some(DmlDevice::Npu),
+        device_fallback: None,
+    };
+    let cpu = EngineRuntime {
+        backend: Backend::Cpu,
+        kind: EngineKind::WhisperCpp,
+        device: None,
+        ..npu.clone()
+    };
+    let transcription_test = |runtime: &EngineRuntime, language| {
+        TranscriptionTestResult::new(
+            "Olá, isto é um teste.".into(),
+            &test_plan,
+            language,
+            Some(runtime),
+            &test_audio,
+            Duration::from_millis(820),
+        )
+    };
     let failed = ModelState::Failed {
         reason: "Download falhou: conexão perdida".into(),
     };
@@ -141,6 +183,11 @@ fn current_contracts() -> Value {
         "modelProgress": serde_json::to_value(ModelProgressPayload::new(ModelId::Base, &downloading)).unwrap(),
         "modelFailedProgress": serde_json::to_value(ModelProgressPayload::new(ModelId::LargeV3Turbo, &failed)).unwrap(),
         "backends": serde_json::to_value(backend_options).unwrap(),
+        "transcriptionTest": serde_json::to_value(transcription_test(&npu, Language::Pt)).unwrap(),
+        "transcriptionTestCpu": serde_json::to_value(transcription_test(&cpu, Language::Auto)).unwrap(),
+        "transcriptionTestEnded": serde_json::to_value(TranscriptionTestEndedPayload {
+            reason: TranscriptionTestEndReason::MaxDuration,
+        }).unwrap(),
     })
 }
 

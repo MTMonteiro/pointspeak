@@ -45,6 +45,7 @@ export type MicrophoneInfo = {
 export const ENGINE_STATUS = "engine://status";
 export const SETTINGS_MIC_LEVEL = "settings://mic-level";
 export const SETTINGS_MIC_TEST_ENDED = "settings://mic-test-ended";
+export const SETTINGS_TRANSCRIPTION_TEST_ENDED = "settings://transcription-test-ended";
 
 /** DirectML device the ONNX engine runs on (`engine::DmlDevice`). */
 export type DmlDevice = "npu" | "gpu";
@@ -104,6 +105,36 @@ export type SettingsMicLevelPayload = AudioLevelPayload;
 export type MicTestEndedPayload = {
   reason: "dictation" | "deviceLost";
   message?: string;
+};
+
+/**
+ * `settings://transcription-test-ended`: the test recording stopped by itself. Call
+ * `stop_transcription_test` next: at `maxDuration` it transcribes what was recorded, otherwise it
+ * rejects with the PT-BR error.
+ */
+export type TranscriptionTestEndedPayload = {
+  reason: "maxDuration" | "deviceLost" | "dictation";
+};
+
+/**
+ * Mirrors `TranscriptionTestResult`, returned by `stop_transcription_test` (the dictation's
+ * transcription path; nothing is pasted or copied). Levels arrive on `settings://mic-level`.
+ */
+export type TranscriptionTestResult = {
+  text: string;
+  model: ModelId;
+  /** Backend that really ran (CPU after a fallback). */
+  backend: Exclude<Backend, "auto">;
+  /** Only with the ONNX engine on DirectML. */
+  device?: DmlDevice;
+  language: Language;
+  audioSeconds: number;
+  /** Transcription time (includes loading the model when it loaded now). */
+  elapsedMs: number;
+  /** Peak of the recorded audio, 0..1. */
+  peak: number;
+  /** Microphone sample rate before resampling to 16 kHz. */
+  sampleRate: number;
 };
 
 /** Shape returned by `list_backends` (`BackendOption`). */
