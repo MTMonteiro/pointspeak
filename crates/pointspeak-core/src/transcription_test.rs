@@ -36,11 +36,7 @@ pub fn capture_settings(input_rate: u32, channels: u16) -> CaptureSettings {
 
 /// Pico absoluto do áudio, entre 0 e 1.
 pub fn peak(samples: &[f32]) -> f32 {
-    samples
-        .iter()
-        .map(|s| s.abs())
-        .fold(0.0, f32::max)
-        .min(1.0)
+    samples.iter().map(|s| s.abs()).fold(0.0, f32::max).min(1.0)
 }
 
 /// Segundos de áudio 16 kHz.
@@ -207,7 +203,9 @@ mod tests {
     use std::path::PathBuf;
 
     fn speech(len: usize) -> Vec<f32> {
-        (0..len).map(|i| if i % 2 == 0 { 0.2 } else { -0.3 }).collect()
+        (0..len)
+            .map(|i| if i % 2 == 0 { 0.2 } else { -0.3 })
+            .collect()
     }
 
     #[test]

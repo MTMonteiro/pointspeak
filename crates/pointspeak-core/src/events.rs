@@ -47,10 +47,12 @@ pub const MODELS_PROGRESS: &str = "models://progress";
 
 /// Estado do motor de transcrição (rodapé das Configurações).
 pub const ENGINE_STATUS: &str = "engine://status";
-/// Nível do microfone durante o teste das Configurações.
+/// Nível do microfone durante o teste das Configurações (de microfone ou de transcrição).
 pub const SETTINGS_MIC_LEVEL: &str = "settings://mic-level";
 /// O teste de microfone parou sem o `stop_mic_test`.
 pub const SETTINGS_MIC_TEST_ENDED: &str = "settings://mic-test-ended";
+/// A gravação do teste de transcrição parou sozinha (`transcription_test::TranscriptionTestEndedPayload`).
+pub const SETTINGS_TRANSCRIPTION_TEST_ENDED: &str = "settings://transcription-test-ended";
 
 /// Máximo de caracteres de uma mensagem de erro do HUD (cabe nos 204 px da pílula).
 pub const MAX_ERROR_MESSAGE_CHARS: usize = 22;

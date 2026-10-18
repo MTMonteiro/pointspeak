@@ -36,6 +36,7 @@ use tauri::{AppHandle, Emitter, Manager, Runtime, State};
 
 use crate::audio::{AudioError, AudioRecorder, RecordingHandle};
 use crate::dictation::DictationHandle;
+use crate::transcription_test::TranscriptionTest;
 use crate::{onnx, transcriber};
 use crate::{AppState, SETTINGS_WINDOW};
 
@@ -211,6 +212,11 @@ impl MicTest {
         Ok(())
     }
 
+    /// Há um teste aberto.
+    pub fn is_open(&self) -> bool {
+        lock(&self.current).is_some()
+    }
+
     /// Fecha o teste; `true` se havia um aberto.
     pub fn stop(&self) -> bool {
         match take_if(&self.current, None) {
@@ -295,14 +301,21 @@ impl MicSink for TauriMicSink {
     }
 }
 
+/// Mensagem do `start_mic_test` com o teste de transcrição gravando.
+pub const MIC_TEST_TRANSCRIBING: &str = "Um teste de transcrição está em andamento.";
+
 /// Comando Tauri: abre o teste do microfone (`null` = padrão do sistema). Fora da thread principal
 /// (abrir o dispositivo pode demorar).
 #[tauri::command(async)]
 pub fn start_mic_test(
     app: AppHandle,
     test: State<'_, MicTest>,
+    transcription: State<'_, TranscriptionTest>,
     microphone: Option<String>,
 ) -> Result<(), String> {
+    if transcription.is_recording() {
+        return Err(MIC_TEST_TRANSCRIBING.to_string());
+    }
     let busy = || {
         *app.state::<AppState>()
             .hud
@@ -449,7 +462,9 @@ mod tests {
         let (test, rx, callbacks) = harness(Ok(()));
         test.start(Some("USB Mic"), idle).unwrap();
         (callbacks.lock().unwrap().as_ref().unwrap().0)(0.4);
+        assert!(test.is_open());
         assert!(test.stop());
+        assert!(!test.is_open());
         assert!(!test.stop());
         expect(
             &rx,

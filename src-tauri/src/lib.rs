@@ -24,6 +24,7 @@ pub mod onnx_whisper;
 pub mod settings;
 pub mod shortcut;
 pub mod transcriber;
+pub mod transcription_test;
 mod tray;
 pub mod vad;
 
@@ -81,7 +82,9 @@ pub fn run() {
             settings::start_mic_test,
             settings::stop_mic_test,
             shortcut::suspend_hotkey,
-            transcriber::load_transcriber
+            transcriber::load_transcriber,
+            transcription_test::start_transcription_test,
+            transcription_test::stop_transcription_test
         ])
         .setup(|app| {
             let handle = app.handle();
@@ -94,6 +97,10 @@ pub fn run() {
             app.manage(tray::build(handle)?);
             app.manage(settings::MicTest::new(
                 settings::CpalMic,
+                settings::TauriMicSink(handle.clone()),
+            ));
+            app.manage(transcription_test::TranscriptionTest::new(
+                transcription_test::CpalTestMic,
                 settings::TauriMicSink(handle.clone()),
             ));
 

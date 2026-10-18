@@ -15,7 +15,9 @@ const COMMANDS: &[&str] = &[
     "set_active_model",
     "set_config",
     "start_mic_test",
+    "start_transcription_test",
     "stop_mic_test",
+    "stop_transcription_test",
     "suspend_hotkey",
 ];
 

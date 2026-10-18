@@ -15,7 +15,8 @@
 //!   veja `shortcut.rs`.
 //! - **Motor:** a cada mudança do estado do modelo ou da pausa, [`Backend::engine_changed`] emite
 //!   `engine://status` para a janela `settings` (`settings.rs`); o espelho fica no [`DictationHandle`].
-//! - **Teste de microfone:** abrir a gravação fecha antes o teste das Configurações, se houver.
+//! - **Testes das Configurações:** abrir a gravação fecha antes o teste de microfone e o de
+//!   transcrição, se houver.
 //! - **Modelo:** [`reload_model`] carrega o modelo do config em segundo plano (no `setup` e quando
 //!   o modelo ativo muda) e informa a bandeja; o ditado sem engine carregada carrega na hora (lazy).
 
@@ -43,6 +44,7 @@ use crate::audio::{AudioRecorder, RecordingHandle};
 use crate::hud::HudController;
 use crate::settings::{self, MicTest};
 use crate::shortcut::HotkeyBinding;
+use crate::transcription_test::TranscriptionTest;
 use crate::tray::TrayHandles;
 use crate::{injector, transcriber, vad, AppState, HUD_WINDOW};
 
@@ -372,6 +374,9 @@ impl TauriBackend {
 impl Backend for TauriBackend {
     fn start_recording(&mut self, id: u64, inbox: Inbox) -> bool {
         if let Some(test) = self.app.try_state::<MicTest>() {
+            test.stop_for_dictation();
+        }
+        if let Some(test) = self.app.try_state::<TranscriptionTest>() {
             test.stop_for_dictation();
         }
         let config = current_config(&self.app);
