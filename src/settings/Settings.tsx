@@ -167,7 +167,7 @@ function EngineStatusView({ status }: { status: EngineStatus | null }) {
     text = "Nenhum modelo ativo";
     tone = "warning";
   } else if (status?.status === "failed") {
-    text = "Ditado indisponível";
+    text = status.loadError ? `Ditado indisponível: ${status.loadError}` : "Ditado indisponível";
     tone = "error";
   } else if (status?.status === "loaded") {
     text = status.paused

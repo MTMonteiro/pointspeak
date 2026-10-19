@@ -48,6 +48,13 @@
     "paused": false,
     "status": "loaded"
   },
+  "engineStatusFailed": {
+    "backend": "cpu",
+    "loadError": "Pouca memória livre para carregar o modelo: precisa de cerca de 7,8 GB e há 3,8 GB livres. Feche alguns programas ou escolha um modelo menor.",
+    "model": "tiny",
+    "paused": false,
+    "status": "failed"
+  },
   "engineStatusFallback": {
     "backend": "cpu",
     "fallbackReason": "DirectML não iniciou: provider indisponível",

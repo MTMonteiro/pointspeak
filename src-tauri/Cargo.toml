@@ -51,9 +51,11 @@ whisper-rs = { version = "0.16", features = ["log_backend"] }
 [target.'cfg(windows)'.dependencies]
 # Injector: `GetForegroundWindow` → processo (`OpenProcess` + `QueryFullProcessImageNameW`).
 # Atalho de toque duplo (`double_tap.rs`): hook `WH_KEYBOARD_LL` e `SendInput`.
+# Memória livre antes de carregar o modelo (`transcriber.rs`): `GlobalMemoryStatusEx`.
 windows = { version = "0.62", features = [
     "Win32_Foundation",
     "Win32_System_LibraryLoader",
+    "Win32_System_SystemInformation",
     "Win32_System_Threading",
     "Win32_UI_Input_KeyboardAndMouse",
     "Win32_UI_WindowsAndMessaging",

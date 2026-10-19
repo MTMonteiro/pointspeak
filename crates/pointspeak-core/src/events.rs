@@ -201,6 +201,10 @@ pub struct EngineStatusPayload {
     /// ONNX: …. Usando a GPU.`). Veja `engine::DeviceFallback`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub device_fallback_reason: Option<String>,
+    /// Só com `status: failed`: por que o modelo não carregou (PT-BR, ex.: `Pouca memória livre
+    /// para carregar o modelo: …`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub load_error: Option<String>,
 }
 
 /// Por que o teste de microfone parou sozinho.
@@ -262,6 +266,7 @@ mod tests {
             fallback_reason: None,
             device: None,
             device_fallback_reason: None,
+            load_error: None,
         };
         // Sem fallback, `fallbackReason` não aparece.
         assert_eq!(
@@ -307,10 +312,20 @@ mod tests {
             fallback_reason: None,
             device: None,
             device_fallback_reason: None,
+            load_error: None,
         };
         assert_eq!(
             serde_json::to_value(none).unwrap(),
             json!({ "model": null, "status": "notSelected", "backend": "cpu", "paused": true })
+        );
+        let failed = EngineStatusPayload {
+            status: ModelStatus::Failed,
+            load_error: Some("Pouca memória livre".into()),
+            ..loaded.clone()
+        };
+        assert_eq!(
+            serde_json::to_value(failed).unwrap()["loadError"],
+            "Pouca memória livre"
         );
         for (status, name) in [
             (ModelStatus::Loading, "loading"),

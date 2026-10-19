@@ -115,6 +115,9 @@ a transcrição roda (Automático, NPU/GPU via DirectML no Windows, ou CPU). Pel
   ~300 MB no `tiny`/`base` na CPU a ~4 GB no `large-v3-turbo` na NPU/GPU). Em **Hardware → Liberar a memória do
   modelo**, escolha depois de quantos minutos sem uso ele sai da memória; ao apertar o atalho de novo ele
   carrega enquanto você fala (alguns segundos no `large-v3-turbo`).
+- **"Ditado indisponível: Pouca memória livre…":** carregar o modelo usa mais memória que mantê-lo pronto (até
+  ~8 GB no `large-v3-turbo` no OpenVINO). Para não travar a máquina, o PointSpeak não carrega quando a memória
+  livre não dá: feche alguns programas e dite de novo, ou use um modelo menor (`base`, `small`) ou o DirectML.
 - **Atalho com dois toques (Alt+Alt):** em **Atalho → Alterar**, toque duas vezes rápido em `Alt`, `Ctrl` ou
   `Shift`. No modo **Segurar para falar**, segure o segundo toque enquanto fala. Só no Windows.
 - **O atalho não faz nada:** veja se o ditado está pausado (menu da bandeja) ou se outro app já usa a mesma

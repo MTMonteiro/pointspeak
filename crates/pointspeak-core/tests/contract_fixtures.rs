@@ -13,6 +13,7 @@ use pointspeak_core::events::{
 use pointspeak_core::hotkey::HotkeyMode;
 use pointspeak_core::hud::HudState;
 use pointspeak_core::hud_layout::HudAnchor;
+use pointspeak_core::memory::memory_shortage;
 use pointspeak_core::models::{
     DownloadError, DownloadEvent, ModelRegistry, ModelState, ModelVariant,
 };
@@ -75,6 +76,7 @@ fn current_contracts() -> Value {
         fallback_reason: None,
         device: None,
         device_fallback_reason: None,
+        load_error: None,
     };
     let engine_fallback = EngineStatusPayload {
         fallback_reason: Some("DirectML não iniciou: provider indisponível".into()),
@@ -180,6 +182,11 @@ fn current_contracts() -> Value {
         "engineStatusNpuToGpu": serde_json::to_value(&engine_npu_to_gpu).unwrap(),
         "engineStatusReleased": serde_json::to_value(EngineStatusPayload {
             status: ModelStatus::Released,
+            ..engine.clone()
+        }).unwrap(),
+        "engineStatusFailed": serde_json::to_value(EngineStatusPayload {
+            status: ModelStatus::Failed,
+            load_error: Some(memory_shortage(7_992 << 20, 3_900 << 20).unwrap()),
             ..engine.clone()
         }).unwrap(),
         "appConfig": serde_json::to_value(&config).unwrap(),

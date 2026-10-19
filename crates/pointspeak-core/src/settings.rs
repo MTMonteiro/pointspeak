@@ -260,6 +260,7 @@ pub fn engine_status(
         device_fallback_reason: runtime
             .and_then(|r| r.device_fallback.as_ref())
             .map(|f| f.message()),
+        load_error: None,
     }
 }
 
@@ -627,6 +628,7 @@ mod tests {
                 fallback_reason: Some(REASON_NOT_INCLUDED.to_string()),
                 device: None,
                 device_fallback_reason: None,
+                load_error: None,
             }
         );
         let none = engine_status(

@@ -68,6 +68,8 @@ export type EngineStatus = {
   device?: DmlDevice;
   /** Only when the NPU failed and the GPU took over (informative, PT-BR). */
   deviceFallbackReason?: string;
+  /** Only with `status: "failed"`: why the model did not load (PT-BR, e.g. not enough free memory). */
+  loadError?: string;
 };
 
 export type ModelState =

@@ -23,7 +23,10 @@
 //! `onnxruntime.dll`); nas cargas seguintes só roda um aquecimento curto
 //! ([`OrtWhisperTranscriber::warm_up`]), que também tira do 1º ditado a compilação da NPU e dos
 //! shaders. Memória: [`release_if_idle`] solta a engine depois de `unloadIdleMins` sem uso e
-//! [`preload`] a carrega de novo ao apertar o atalho, enquanto a pessoa fala.
+//! [`preload`] a carrega de novo ao apertar o atalho, enquanto a pessoa fala. Antes de carregar,
+//! o pico de RAM estimado (`pointspeak_core::memory`) é conferido com a memória livre
+//! ([`available_memory`]): se não cabe, a carga falha com o aviso em vez de travar a máquina; se
+//! só a referência da CPU da verificação não cabe, a verificação fica para a próxima carga.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -33,9 +36,10 @@ use std::time::{Duration, Instant};
 use pointspeak_core::config::{AppConfig, Backend, ModelId};
 use pointspeak_core::dictation::{Input, ModelStatus};
 use pointspeak_core::engine::{
-    load_with_fallback, runtime_label, sanity_checked, EnginePlan, EngineRuntime, GgmlGpu,
-    OnnxLoadError,
+    load_with_fallback, runtime_label, sanity_checked, EngineKind, EnginePlan, EngineRuntime,
+    GgmlGpu, OnnxLoadError,
 };
+use pointspeak_core::memory::{load_peak_bytes, memory_shortage};
 use pointspeak_core::models::OnnxModelInfo;
 use pointspeak_core::models::{onnx_model_ready, ModelVariant};
 use pointspeak_core::transcriber::{
@@ -241,12 +245,67 @@ fn verification_key(model: ModelId, label: &str, library_size: Option<u64>) -> S
     )
 }
 
+/// Memória física livre, em bytes (`None` = não deu para ler; a conferência fica de fora).
+/// `POINTSPEAK_FREE_MEMORY_MB` simula outro valor (para testar o aviso).
+pub fn available_memory() -> Option<u64> {
+    if let Some(mb) = std::env::var("POINTSPEAK_FREE_MEMORY_MB")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+    {
+        return Some(mb * 1024 * 1024);
+    }
+    available_physical_memory()
+}
+
+#[cfg(windows)]
+fn available_physical_memory() -> Option<u64> {
+    use windows::Win32::System::SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX};
+    let mut status = MEMORYSTATUSEX {
+        dwLength: std::mem::size_of::<MEMORYSTATUSEX>() as u32,
+        ..Default::default()
+    };
+    // SAFETY: `status` é um MEMORYSTATUSEX com o `dwLength` certo, vivo durante a chamada.
+    unsafe { GlobalMemoryStatusEx(&mut status) }.ok()?;
+    Some(status.ullAvailPhys)
+}
+
+/// `MemAvailable` do `/proc/meminfo` (Linux).
+#[cfg(not(windows))]
+fn available_physical_memory() -> Option<u64> {
+    let meminfo = fs::read_to_string("/proc/meminfo").ok()?;
+    let line = meminfo.lines().find(|l| l.starts_with("MemAvailable:"))?;
+    let kib: u64 = line.split_whitespace().nth(1)?.parse().ok()?;
+    Some(kib * 1024)
+}
+
+/// Aviso se o pico de RAM da carga de `kind` no `backend` (com os arquivos da `variant` do
+/// `model`) não cabe na memória livre.
+fn memory_warning(
+    kind: EngineKind,
+    backend: Backend,
+    model: ModelId,
+    variant: ModelVariant,
+) -> Option<String> {
+    let needed = load_peak_bytes(kind, backend, variant.size_bytes(model));
+    memory_shortage(needed, available_memory()?)
+}
+
 /// Carrega a engine do plano, com o fallback para o whisper.cpp na CPU.
 fn load_engine(
     plan: &EnginePlan,
     dir: &Path,
     verified: &VerifiedDevices,
 ) -> Result<(Box<dyn Transcriber>, EngineRuntime), TranscribeError> {
+    // Sem a variante ONNX no disco, o que carrega é o ggml (fallback).
+    let kind = match plan.kind() {
+        EngineKind::Onnx if !plan.onnx_ready => EngineKind::WhisperCpp,
+        kind => kind,
+    };
+    if let Some(warning) = memory_warning(kind, plan.backend, plan.model, kind.variant()) {
+        eprintln!("[pointspeak] modelo não carregado: {warning}");
+        log::warn!("modelo não carregado: {warning}");
+        return Err(TranscribeError::Load(warning));
+    }
     let onnx_dir = ModelVariant::Onnx.local_path(plan.model, dir);
     let ggml = ModelVariant::Ggml.local_path(plan.model, dir);
     // Referência da CPU para a verificação de sanidade: calculada uma vez por carga (NPU e GPU
@@ -280,7 +339,19 @@ fn load_engine(
                     );
                 } else {
                     let reference = reference
-                        .get_or_insert_with(|| cpu_reference(environment, &onnx_dir, info))
+                        .get_or_insert_with(|| {
+                            // A referência abre o modelo de novo na CPU, com a engine carregada.
+                            if let Some(warning) = memory_warning(
+                                EngineKind::Onnx,
+                                Backend::Cpu,
+                                plan.model,
+                                ModelVariant::Onnx,
+                            ) {
+                                eprintln!("[pointspeak] verificação de sanidade ({label}) fica para a próxima carga: {warning}");
+                                return None;
+                            }
+                            cpu_reference(environment, &onnx_dir, info)
+                        })
                         .as_ref();
                     let checked =
                         check_device(&mut engine, reference, &label).inspect_err(|e| {
@@ -367,7 +438,9 @@ fn with_engine<R: Runtime, T>(
     let verified = VerifiedDevices::open(app);
     let engine = slot.ensure(key, |key| {
         runtime_slot(&state).take();
-        let (engine, runtime) = load_engine(&plan, &dir, &verified)?;
+        let loaded = load_engine(&plan, &dir, &verified);
+        *load_error_slot(&state) = loaded.as_ref().err().map(ToString::to_string);
+        let (engine, runtime) = loaded?;
         *runtime_slot(&state) = Some((key, runtime));
         loaded_now = true;
         Ok(engine)
@@ -407,6 +480,18 @@ pub fn release_if_idle<R: Runtime>(app: &AppHandle<R>, idle: Duration) -> bool {
     runtime_slot(&state).take();
     *last_use(&state) = None;
     true
+}
+
+fn load_error_slot(state: &AppState) -> MutexGuard<'_, Option<String>> {
+    state
+        .engine_load_error
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+}
+
+/// Erro da última carga, se ela falhou (ex.: pouca memória livre).
+pub fn load_error<R: Runtime>(app: &AppHandle<R>) -> Option<String> {
+    load_error_slot(&app.state::<AppState>()).clone()
 }
 
 /// Carrega a engine do config em segundo plano se ela não está na memória (o atalho foi apertado

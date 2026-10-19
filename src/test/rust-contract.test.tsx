@@ -73,7 +73,8 @@ function isEngineStatus(value: unknown): value is EngineStatus {
     && typeof value.paused === "boolean"
     && (value.fallbackReason === undefined || typeof value.fallbackReason === "string")
     && (value.device === undefined || isOneOf(value.device, ["npu", "gpu"]))
-    && (value.deviceFallbackReason === undefined || typeof value.deviceFallbackReason === "string");
+    && (value.deviceFallbackReason === undefined || typeof value.deviceFallbackReason === "string")
+    && (value.loadError === undefined || typeof value.loadError === "string");
 }
 
 function isModelState(value: unknown): boolean {
@@ -159,6 +160,7 @@ function readContracts() {
     engineStatusFallback: checked(rawFixtures.engineStatusFallback, isEngineStatus, "engineStatusFallback"),
     engineStatusNpuToGpu: checked(rawFixtures.engineStatusNpuToGpu, isEngineStatus, "engineStatusNpuToGpu"),
     engineStatusReleased: checked(rawFixtures.engineStatusReleased, isEngineStatus, "engineStatusReleased"),
+    engineStatusFailed: checked(rawFixtures.engineStatusFailed, isEngineStatus, "engineStatusFailed"),
     modelsGgml: checked(rawFixtures.modelsGgml, isModelsOverview, "modelsGgml"),
     modelsOnnx: checked(rawFixtures.modelsOnnx, isModelsOverview, "modelsOnnx"),
     modelProgress: checked(rawFixtures.modelProgress, isModelProgress, "modelProgress"),
@@ -246,6 +248,9 @@ describe("fixtures do contrato Rust ↔ TypeScript", () => {
       await act(async () => emitTauriEvent(ENGINE_STATUS, fixtures.engineStatusNpuToGpu));
       expect(screen.getByText(/NPU não carregou o modelo ONNX: op sem suporte\. Usando a GPU\./)).toBeInTheDocument();
       expect(screen.getByText("Pronto · tiny · DirectML · GPU")).toBeInTheDocument();
+      await act(async () => emitTauriEvent(ENGINE_STATUS, fixtures.engineStatusFailed));
+      expect(screen.getByRole("status", { name: "Estado do motor de transcrição" }))
+        .toHaveTextContent("Ditado indisponível: Pouca memória livre para carregar o modelo: precisa de cerca de 7,8 GB e há 3,8 GB livres.");
 
       view.unmount();
     },

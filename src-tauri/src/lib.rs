@@ -47,6 +47,8 @@ pub struct AppState {
     pub engine_runtime: Mutex<Option<(EngineKey, EngineRuntime)>>,
     /// Último uso da engine (carga ou transcrição), para soltá-la depois de `unloadIdleMins`.
     pub engine_last_use: Mutex<Option<Instant>>,
+    /// Erro da última carga que falhou (vai no `loadError` do `engine://status`).
+    pub engine_load_error: Mutex<Option<String>>,
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
