@@ -9,6 +9,7 @@ pub mod hotkey;
 pub mod hud;
 pub mod hud_layout;
 pub mod injector;
+pub mod load_progress;
 pub mod memory;
 pub mod models;
 pub mod onnx_runtime;

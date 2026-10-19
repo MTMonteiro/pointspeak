@@ -49,6 +49,8 @@ pub struct AppState {
     pub engine_last_use: Mutex<Option<Instant>>,
     /// Erro da última carga que falhou (vai no `loadError` do `engine://status`).
     pub engine_load_error: Mutex<Option<String>>,
+    /// Carga do modelo em andamento (porcentagem e etapa; `transcriber::load_progress`).
+    pub engine_load_progress: Mutex<Option<pointspeak_core::load_progress::LoadProgress>>,
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]

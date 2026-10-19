@@ -189,18 +189,32 @@ describe("OpenVINO: NPU ou GPU", () => {
     expect(screen.getByText("Em uso agora: OpenVINO · NPU")).toBeInTheDocument();
   });
 
-  it("avisa que a primeira carga do OpenVINO compila para a NPU", async () => {
+  function mockLoading(loadProgress: Record<string, unknown>) {
     setInvokeHandler((command, args) => {
       if (command === "get_config") return { ...CONFIG, backend: "openvino" };
       if (command === "set_config") return args?.config;
       if (command === "list_microphones") return [];
-      if (command === "get_engine_status") return { model: "large-v3-turbo", status: "loading", backend: "openvino", paused: false };
+      if (command === "get_engine_status") return { model: "large-v3-turbo", status: "loading", backend: "openvino", paused: false, loadProgress };
       if (command === "list_models") return { models: [], dir: "/models", usedBytes: 0 };
       if (command === "list_backends") return BACKENDS;
       return undefined;
     });
+  }
+
+  it("avisa que a primeira carga do OpenVINO compila para a NPU, com o progresso estimado", async () => {
+    mockLoading({ percent: 20, stage: "compilando o encoder (só na 1ª vez)", elapsedSecs: 170, expectedSecs: 850, compiling: true });
     await openHardware();
     expect(await screen.findByText(/compila o modelo para a NPU/)).toBeInTheDocument();
+    expect(screen.getByRole("progressbar", { name: "Preparação do OpenVINO" })).toHaveAttribute("aria-valuenow", "20");
+    expect(screen.getByText("20% · 3 min de cerca de 14 min (estimativa)")).toBeInTheDocument();
+    expect(screen.getByText("Carregando modelo… 20% · compilando o encoder (só na 1ª vez)")).toBeInTheDocument();
+  });
+
+  it("carga comum do OpenVINO mostra a porcentagem só no rodapé", async () => {
+    mockLoading({ percent: 60, stage: "abrindo o decoder", elapsedSecs: 2, expectedSecs: 4, compiling: false });
+    await openHardware();
+    expect(await screen.findByText("Carregando modelo… 60% · abrindo o decoder")).toBeInTheDocument();
+    expect(screen.queryByText(/compila o modelo para a NPU/)).not.toBeInTheDocument();
   });
 
   it("NPU que falhou com a GPU assumindo cita o OpenVINO", async () => {

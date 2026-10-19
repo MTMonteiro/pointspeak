@@ -161,7 +161,9 @@ function Icon({ section }: { section: SectionId | "brand" }) {
 }
 
 function EngineStatusView({ status }: { status: EngineStatus | null }) {
-  let text = "Carregando modelo…";
+  let text = status?.loadProgress
+    ? `Carregando modelo… ${status.loadProgress.percent}% · ${status.loadProgress.stage}`
+    : "Carregando modelo…";
   let tone = "loading";
   if (status?.status === "notSelected") {
     text = "Nenhum modelo ativo";

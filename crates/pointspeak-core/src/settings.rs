@@ -261,6 +261,7 @@ pub fn engine_status(
             .and_then(|r| r.device_fallback.as_ref())
             .map(|f| f.message()),
         load_error: None,
+        load_progress: None,
     }
 }
 
@@ -629,6 +630,7 @@ mod tests {
                 device: None,
                 device_fallback_reason: None,
                 load_error: None,
+                load_progress: None,
             }
         );
         let none = engine_status(

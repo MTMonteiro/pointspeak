@@ -75,8 +75,10 @@ fn payload<R: Runtime>(
         &engines,
         runtime.as_ref(),
     );
-    if status == ModelStatus::Failed {
-        payload.load_error = transcriber::load_error(app);
+    match status {
+        ModelStatus::Failed => payload.load_error = transcriber::load_error(app),
+        ModelStatus::Loading => payload.load_progress = transcriber::load_progress(app),
+        _ => {}
     }
     payload
 }

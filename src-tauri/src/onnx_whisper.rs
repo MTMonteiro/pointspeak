@@ -33,6 +33,7 @@ use ort::session::{Session, SessionInputValue};
 use ort::value::{DynValue, Tensor, ValueType};
 use pointspeak_core::config::Backend;
 use pointspeak_core::engine::{runtime_label, DmlDevice, OnnxLoadError};
+use pointspeak_core::load_progress::LoadStage;
 use pointspeak_core::models::OnnxModelInfo;
 use pointspeak_core::transcriber::{TranscribeError, TranscribeOptions, Transcriber};
 use pointspeak_core::whisper_onnx::mel::N_FRAMES;
@@ -132,6 +133,19 @@ impl OrtWhisperTranscriber {
         backend: Backend,
         device: Option<DmlDevice>,
     ) -> Result<Self, OnnxLoadError> {
+        Self::load_with_stages(environment, dir, info, backend, device, &|_| {})
+    }
+
+    /// [`load`](Self::load) avisando cada etapa em `on_stage` (encoder, decoder), para o
+    /// progresso da carga.
+    pub fn load_with_stages(
+        environment: &Environment,
+        dir: &Path,
+        info: &OnnxModelInfo,
+        backend: Backend,
+        device: Option<DmlDevice>,
+        on_stage: &dyn Fn(LoadStage),
+    ) -> Result<Self, OnnxLoadError> {
         let read = |name: &str| {
             fs::read_to_string(dir.join(name))
                 .map_err(|e| OnnxLoadError::Model(format!("{name}: {e}")))
@@ -142,11 +156,19 @@ impl OrtWhisperTranscriber {
         )
         .map_err(|e| OnnxLoadError::Model(e.to_string()))?;
         let device = device.unwrap_or(DmlDevice::Gpu);
+        on_stage(LoadStage::Encoder);
         let encoder = if backend == Backend::Openvino {
-            open_openvino_encoder(environment, device, dir, info.encoder.file_name())?
+            open_openvino_encoder(
+                environment,
+                device,
+                dir,
+                info.encoder.file_name(),
+                info.n_mels,
+            )?
         } else {
             open_session(environment, backend, device, dir, info.encoder.file_name())?
         };
+        on_stage(LoadStage::Decoder);
         let (decoder, decoder_past, decoder_backend) =
             open_decoders(environment, backend, device, dir, info)?;
         let dims = cache_dims(&decoder).map_err(OnnxLoadError::Model)?;
@@ -361,8 +383,8 @@ pub fn openvino_precompiled(dir: &Path) -> bool {
 }
 
 /// Encoder no OpenVINO pelo modelo pré-compilado (EPContext). Sem ele, compila o `file` com a
-/// entrada de tamanho fixo (lote 1: a NPU só exporta modelos estáticos) e grava o EPContext para as
-/// próximas cargas; o cache de compilação antigo sai (o EPContext o substitui). Um EPContext que
+/// entrada de tamanho fixo (`[1, n_mels, 3000]`: a NPU só exporta modelos estáticos, e os exports
+/// do tiny/base/small deixam as três dimensões livres) e grava o EPContext para as próximas cargas; o cache de compilação antigo sai (o EPContext o substitui). Um EPContext que
 /// não abre (ex.: driver novo) é apagado e gerado de novo; se a geração falha, abre como antes, com
 /// o cache de compilação.
 fn open_openvino_encoder(
@@ -370,6 +392,7 @@ fn open_openvino_encoder(
     device: DmlDevice,
     dir: &Path,
     file: &str,
+    n_mels: usize,
 ) -> Result<Session, OnnxLoadError> {
     let context = openvino_context_path(dir, device);
     let label = runtime_label(Backend::Openvino, Some(device));
@@ -385,7 +408,7 @@ fn open_openvino_encoder(
             }
         }
     }
-    match export_openvino_context(environment, device, dir, file, &context) {
+    match export_openvino_context(environment, device, dir, file, n_mels, &context) {
         Ok(session) => {
             remove_compile_cache(dir);
             eprintln!(
@@ -407,6 +430,7 @@ fn export_openvino_context(
     device: DmlDevice,
     dir: &Path,
     file: &str,
+    n_mels: usize,
     context: &Path,
 ) -> Result<Session, OnnxLoadError> {
     if let Some(parent) = context.parent() {
@@ -415,6 +439,10 @@ fn export_openvino_context(
     let model_err = |e: ort::Error<SessionBuilder>| OnnxLoadError::Model(e.to_string());
     let builder = session_builder(environment, Backend::Openvino, device, None)?
         .with_dimension_override("batch_size", 1)
+        .map_err(model_err)?
+        .with_dimension_override("feature_size", n_mels as i64)
+        .map_err(model_err)?
+        .with_dimension_override("encoder_sequence_length", N_FRAMES as i64)
         .map_err(model_err)?
         .with_config_entry("ep.context_enable", "1")
         .map_err(model_err)?

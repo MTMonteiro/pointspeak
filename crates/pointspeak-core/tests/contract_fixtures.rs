@@ -13,6 +13,7 @@ use pointspeak_core::events::{
 use pointspeak_core::hotkey::HotkeyMode;
 use pointspeak_core::hud::HudState;
 use pointspeak_core::hud_layout::HudAnchor;
+use pointspeak_core::load_progress::{LoadProgress, LoadStage};
 use pointspeak_core::memory::memory_shortage;
 use pointspeak_core::models::{
     DownloadError, DownloadEvent, ModelRegistry, ModelState, ModelVariant,
@@ -77,6 +78,7 @@ fn current_contracts() -> Value {
         device: None,
         device_fallback_reason: None,
         load_error: None,
+        load_progress: None,
     };
     let engine_fallback = EngineStatusPayload {
         fallback_reason: Some("DirectML não iniciou: provider indisponível".into()),
@@ -182,6 +184,17 @@ fn current_contracts() -> Value {
         "engineStatusNpuToGpu": serde_json::to_value(&engine_npu_to_gpu).unwrap(),
         "engineStatusReleased": serde_json::to_value(EngineStatusPayload {
             status: ModelStatus::Released,
+            ..engine.clone()
+        }).unwrap(),
+        "engineStatusLoading": serde_json::to_value(EngineStatusPayload {
+            status: ModelStatus::Loading,
+            backend: Backend::Openvino,
+            load_progress: Some({
+                let t0 = std::time::Instant::now();
+                let mut load = LoadProgress::new(t0, Some(Duration::from_secs(850)), true);
+                load.set_stage(LoadStage::Encoder);
+                load.payload(t0 + Duration::from_secs(170))
+            }),
             ..engine.clone()
         }).unwrap(),
         "engineStatusFailed": serde_json::to_value(EngineStatusPayload {

@@ -27,7 +27,15 @@
 //! o pico de RAM estimado (`pointspeak_core::memory`) é conferido com a memória livre
 //! ([`available_memory`]): se não cabe, a carga falha com o aviso em vez de travar a máquina; se
 //! só a referência da CPU da verificação não cabe, a verificação fica para a próxima carga.
+//!
+//! Progresso da carga (`pointspeak_core::load_progress`): a carga avisa cada etapa (encoder,
+//! decoder, aquecimento/verificação) e espera a duração da última carga igual ([`LoadTimes`],
+//! `load-times.json`) ou, na 1ª compilação do OpenVINO, a estimativa pelo tamanho do encoder. A
+//! thread `pointspeak-load-progress` manda a porcentagem à bandeja e ao `engine://status` a cada
+//! [`PROGRESS_TICK`].
 
+use std::cell::Cell;
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{MutexGuard, Once};
@@ -38,6 +46,9 @@ use pointspeak_core::dictation::{Input, ModelStatus};
 use pointspeak_core::engine::{
     load_with_fallback, runtime_label, sanity_checked, EngineKind, EnginePlan, EngineRuntime,
     GgmlGpu, OnnxLoadError,
+};
+use pointspeak_core::load_progress::{
+    compile_estimate, LoadProgress, LoadProgressPayload, LoadStage,
 };
 use pointspeak_core::memory::{load_peak_bytes, memory_shortage};
 use pointspeak_core::models::OnnxModelInfo;
@@ -298,6 +309,7 @@ fn load_engine(
     plan: &EnginePlan,
     dir: &Path,
     verified: &VerifiedDevices,
+    on_stage: &dyn Fn(LoadStage),
 ) -> Result<(Box<dyn Transcriber>, EngineRuntime), TranscribeError> {
     // Sem a variante ONNX no disco, o que carrega é o ggml (fallback).
     let kind = match plan.kind() {
@@ -322,9 +334,15 @@ fn load_engine(
                 .ok_or_else(|| OnnxLoadError::Provider("ONNX Runtime não carregado".into()))?;
             let info = plan.model.onnx_info();
             let label = runtime_label(backend, device);
-            let mut engine =
-                OrtWhisperTranscriber::load(environment, &onnx_dir, info, backend, device)
-                    .inspect_err(|e| eprintln!("[pointspeak] engine ONNX ({label}): {e:?}"))?;
+            let mut engine = OrtWhisperTranscriber::load_with_stages(
+                environment,
+                &onnx_dir,
+                info,
+                backend,
+                device,
+                on_stage,
+            )
+            .inspect_err(|e| eprintln!("[pointspeak] engine ONNX ({label}): {e:?}"))?;
             if sanity_checked(backend) {
                 let library_size = onnx::library()
                     .and_then(|path| fs::metadata(path).ok())
@@ -332,6 +350,7 @@ fn load_engine(
                 let key = verification_key(plan.model, &label, library_size);
                 if verified.contains(&key) {
                     // Já aprovado: só aquece (e, na NPU, compila agora, não no 1º ditado).
+                    on_stage(LoadStage::WarmUp);
                     engine.warm_up().map_err(|e| {
                         let e = OnnxLoadError::Model(format!("aquecimento: {e}"));
                         eprintln!("[pointspeak] engine ONNX ({label}): {e:?}");
@@ -341,6 +360,7 @@ fn load_engine(
                         "[pointspeak] verificação de sanidade ({label}): aprovada antes; só aquecimento"
                     );
                 } else {
+                    on_stage(LoadStage::Verify);
                     let reference = reference
                         .get_or_insert_with(|| {
                             // A referência abre o modelo de novo na CPU, com a engine carregada.
@@ -370,6 +390,7 @@ fn load_engine(
             Ok(Box::new(engine) as Box<dyn Transcriber>)
         },
         |backend| {
+            on_stage(LoadStage::Model);
             let gpu = matches!(backend, Backend::Cuda | Backend::Vulkan);
             Ok(Box::new(WhisperTranscriber::load_on(&ggml, gpu)?) as Box<dyn Transcriber>)
         },
@@ -442,7 +463,29 @@ fn with_engine<R: Runtime, T>(
     let verified = VerifiedDevices::open(app);
     let engine = slot.ensure(key, |key| {
         runtime_slot(&state).take();
-        let loaded = load_engine(&plan, &dir, &verified);
+        let times = LoadTimes::open(app);
+        let time_key = load_time_key(&plan);
+        let compiling = compiles_encoder(&plan, &dir);
+        let expected = if compiling {
+            Some(compile_estimate(plan.model.onnx_info().encoder.size_bytes))
+        } else {
+            times.get(&time_key)
+        };
+        let started = Instant::now();
+        *progress_slot(&state) = Some(LoadProgress::new(started, expected, compiling));
+        spawn_progress_ticker(app);
+        // A verificação (1ª vez no dispositivo) deixa a carga mais longa que as outras.
+        let verified_now = Cell::new(false);
+        let loaded = load_engine(&plan, &dir, &verified, &|stage| {
+            verified_now.set(verified_now.get() || stage == LoadStage::Verify);
+            if let Some(progress) = progress_slot(&state).as_mut() {
+                progress.set_stage(stage);
+            }
+        });
+        progress_slot(&state).take();
+        if loaded.is_ok() && !compiling && !verified_now.get() {
+            times.insert(time_key, started.elapsed());
+        }
         *load_error_slot(&state) = loaded.as_ref().err().map(ToString::to_string);
         let (engine, runtime) = loaded?;
         *runtime_slot(&state) = Some((key, runtime));
@@ -452,6 +495,112 @@ fn with_engine<R: Runtime, T>(
     let result = f(engine);
     *last_use(&state) = Some(Instant::now());
     Ok((result?, loaded_now))
+}
+
+/// Arquivo, na pasta de dados do app, com a duração da última carga de cada modelo + backend.
+const LOAD_TIMES_FILE: &str = "load-times.json";
+
+/// De quanto em quanto tempo a porcentagem da carga é atualizada.
+const PROGRESS_TICK: Duration = Duration::from_millis(500);
+
+/// Duração da última carga comum (sem compilação nem verificação) de cada [`load_time_key`], em
+/// segundos, num JSON. É a duração esperada da próxima carga igual.
+struct LoadTimes {
+    path: Option<PathBuf>,
+}
+
+impl LoadTimes {
+    fn open<R: Runtime>(app: &AppHandle<R>) -> Self {
+        Self {
+            path: app
+                .path()
+                .app_data_dir()
+                .ok()
+                .map(|d| d.join(LOAD_TIMES_FILE)),
+        }
+    }
+
+    fn read(&self) -> BTreeMap<String, f64> {
+        self.path
+            .as_ref()
+            .and_then(|p| fs::read_to_string(p).ok())
+            .and_then(|text| serde_json::from_str(&text).ok())
+            .unwrap_or_default()
+    }
+
+    fn get(&self, key: &str) -> Option<Duration> {
+        self.read()
+            .get(key)
+            .filter(|secs| secs.is_finite() && **secs > 0.0)
+            .map(|secs| Duration::from_secs_f64(*secs))
+    }
+
+    fn insert(&self, key: String, duration: Duration) {
+        let Some(path) = &self.path else { return };
+        let mut times = self.read();
+        times.insert(key, (duration.as_secs_f64() * 10.0).round() / 10.0);
+        if let Ok(text) = serde_json::to_string_pretty(&times) {
+            if let Err(e) = fs::write(path, text) {
+                log::warn!("{}: {e}", path.display());
+            }
+        }
+    }
+}
+
+/// Chave do [`LoadTimes`]: modelo e backend efetivo (ex.: `large-v3-turbo | openvino`).
+fn load_time_key(plan: &EnginePlan) -> String {
+    format!(
+        "{} | {}",
+        plan.model.as_str(),
+        serde_json::to_value(plan.backend)
+            .ok()
+            .and_then(|v| v.as_str().map(str::to_string))
+            .unwrap_or_default()
+    )
+}
+
+/// A carga vai compilar o encoder no OpenVINO (sem o encoder pré-compilado no disco).
+fn compiles_encoder(plan: &EnginePlan, dir: &Path) -> bool {
+    plan.backend == Backend::Openvino
+        && plan.kind() == EngineKind::Onnx
+        && plan.onnx_ready
+        && !openvino_precompiled(&ModelVariant::Onnx.local_path(plan.model, dir))
+}
+
+fn progress_slot(state: &AppState) -> MutexGuard<'_, Option<LoadProgress>> {
+    state
+        .engine_load_progress
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+}
+
+/// Progresso da carga em andamento (`loadProgress` do `engine://status`).
+pub fn load_progress<R: Runtime>(app: &AppHandle<R>) -> Option<LoadProgressPayload> {
+    progress_slot(&app.state::<AppState>())
+        .as_ref()
+        .map(|progress| progress.payload(Instant::now()))
+}
+
+/// Manda a porcentagem da carga à bandeja e às Configurações a cada [`PROGRESS_TICK`], até a carga
+/// terminar.
+fn spawn_progress_ticker<R: Runtime>(app: &AppHandle<R>) {
+    let app = app.clone();
+    let spawned = std::thread::Builder::new()
+        .name("pointspeak-load-progress".into())
+        .spawn(move || loop {
+            std::thread::sleep(PROGRESS_TICK);
+            let percent = progress_slot(&app.state::<AppState>())
+                .as_ref()
+                .map(|progress| progress.percent(Instant::now()));
+            let Some(percent) = percent else { break };
+            if let Some(handle) = app.try_state::<DictationHandle>() {
+                handle.send(Input::LoadProgress(percent));
+            }
+            settings::refresh_engine_status(&app);
+        });
+    if let Err(e) = spawned {
+        eprintln!("[pointspeak] progresso da carga: thread não iniciou ({e})");
+    }
 }
 
 fn last_use(state: &AppState) -> MutexGuard<'_, Option<Instant>> {

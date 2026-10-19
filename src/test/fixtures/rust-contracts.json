@@ -62,6 +62,19 @@
     "paused": false,
     "status": "loaded"
   },
+  "engineStatusLoading": {
+    "backend": "openvino",
+    "loadProgress": {
+      "compiling": true,
+      "elapsedSecs": 170,
+      "expectedSecs": 850,
+      "percent": 20,
+      "stage": "compilando o encoder (só na 1ª vez)"
+    },
+    "model": "tiny",
+    "paused": false,
+    "status": "loading"
+  },
   "engineStatusNpuToGpu": {
     "backend": "directml",
     "device": "gpu",

@@ -841,7 +841,7 @@ mod tests {
             ..config
         };
         let mut machine = machine_from_config(&config);
-        assert_eq!(machine.tray_status(), TrayStatus::LoadingModel);
+        assert_eq!(machine.tray_status(), TrayStatus::LoadingModel(None));
         machine.handle(Input::Model(ModelStatus::Loaded));
         assert_eq!(
             machine.tray_status(),

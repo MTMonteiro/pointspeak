@@ -3,7 +3,7 @@ import { listen } from "@tauri-apps/api/event";
 import { useCallback, useEffect, useState } from "react";
 import { DML_DEVICE_LABELS, MODELS_PROGRESS } from "../lib/contract";
 import type { AppConfig, Backend, BackendOption, EngineStatus, ModelEntry, ModelProgressPayload, ModelsOverview } from "../lib/contract";
-import { Button, Callout, RadioCard, Select, Skeleton } from "./components";
+import { Button, Callout, Progress, RadioCard, Select, Skeleton } from "./components";
 
 const BACKEND_LABELS: Record<BackendOption["backend"], string> = {
   directml: "NPU (DirectML)",
@@ -22,6 +22,14 @@ const BACKEND_DETAILS: Record<BackendOption["backend"], string> = {
 };
 
 type ListState = "loading" | "ready" | "error";
+
+/** "45 s", "3 min", "1 h 05 min". */
+function formatDuration(totalSecs: number): string {
+  if (totalSecs < 60) return `${totalSecs} s`;
+  const minutes = Math.round(totalSecs / 60);
+  if (minutes < 60) return `${minutes} min`;
+  return `${Math.floor(minutes / 60)} h ${String(minutes % 60).padStart(2, "0")} min`;
+}
 
 /** Choices for `unloadIdleMins` (0 = keep the model in memory); "Personalizado…" takes any minutes. */
 const UNLOAD_IDLE_OPTIONS: { value: number; label: string }[] = [
@@ -177,8 +185,9 @@ export function HardwareSection({
   const runningOnDevice = engineStatus?.backend === "directml" || engineStatus?.backend === "openvino";
   const device = runningOnDevice ? engineStatus?.device : undefined;
   const runningLabel = engineStatus?.backend === "openvino" ? "OpenVINO" : "DirectML";
-  // The first OpenVINO load compiles the encoder for the NPU (~17 min for large-v3-turbo); later loads use the disk cache.
-  const preparingNpu = selectedBackend === "openvino" && engineStatus?.status === "loading";
+  // The first OpenVINO load of each model compiles the encoder (~15 min for large-v3-turbo); later loads open the precompiled one.
+  const loadProgress = engineStatus?.status === "loading" ? engineStatus.loadProgress : undefined;
+  const preparingNpu = selectedBackend === "openvino" && loadProgress?.compiling === true;
   const modelMissing = activeModel !== undefined && activeModel.state !== "ready" && activeModel.state !== "active";
   const modeLabel = selectedBackend && selectedBackend !== "auto" ? BACKEND_LABELS[selectedBackend] : "este modo";
 
@@ -256,9 +265,15 @@ export function HardwareSection({
             </Callout>
           )}
 
-          {preparingNpu && (
+          {preparingNpu && loadProgress && (
             <Callout tone="info">
               <p>Preparando o OpenVINO. Na primeira vez com cada modelo, ele compila o modelo para a NPU, o que pode levar até 20 minutos nos modelos grandes. Depois a carga leva segundos.</p>
+              <Progress label="Preparação do OpenVINO" value={loadProgress.percent} />
+              <p>
+                {loadProgress.percent}% · {formatDuration(loadProgress.elapsedSecs)}
+                {loadProgress.expectedSecs !== undefined && ` de cerca de ${formatDuration(loadProgress.expectedSecs)}`}
+                {" "}(estimativa)
+              </p>
             </Callout>
           )}
 

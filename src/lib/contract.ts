@@ -70,6 +70,20 @@ export type EngineStatus = {
   deviceFallbackReason?: string;
   /** Only with `status: "failed"`: why the model did not load (PT-BR, e.g. not enough free memory). */
   loadError?: string;
+  /** Only with `status: "loading"`, once the load started: estimated percent and current stage. */
+  loadProgress?: LoadProgress;
+};
+
+/** Mirrors `LoadProgressPayload`: the percent is an estimate (stage + time of the last equal load) and stops at 95. */
+export type LoadProgress = {
+  percent: number;
+  /** Current stage (PT-BR, e.g. "abrindo o decoder"). */
+  stage: string;
+  elapsedSecs: number;
+  /** Expected duration of the whole load, when known. */
+  expectedSecs?: number;
+  /** First OpenVINO compile of the encoder (can take minutes). */
+  compiling: boolean;
 };
 
 export type ModelState =

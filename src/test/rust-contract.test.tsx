@@ -74,7 +74,17 @@ function isEngineStatus(value: unknown): value is EngineStatus {
     && (value.fallbackReason === undefined || typeof value.fallbackReason === "string")
     && (value.device === undefined || isOneOf(value.device, ["npu", "gpu"]))
     && (value.deviceFallbackReason === undefined || typeof value.deviceFallbackReason === "string")
-    && (value.loadError === undefined || typeof value.loadError === "string");
+    && (value.loadError === undefined || typeof value.loadError === "string")
+    && (value.loadProgress === undefined || isLoadProgress(value.loadProgress));
+}
+
+function isLoadProgress(value: unknown): boolean {
+  return isRecord(value)
+    && typeof value.percent === "number"
+    && typeof value.stage === "string"
+    && typeof value.elapsedSecs === "number"
+    && (value.expectedSecs === undefined || typeof value.expectedSecs === "number")
+    && typeof value.compiling === "boolean";
 }
 
 function isModelState(value: unknown): boolean {
@@ -161,6 +171,7 @@ function readContracts() {
     engineStatusNpuToGpu: checked(rawFixtures.engineStatusNpuToGpu, isEngineStatus, "engineStatusNpuToGpu"),
     engineStatusReleased: checked(rawFixtures.engineStatusReleased, isEngineStatus, "engineStatusReleased"),
     engineStatusFailed: checked(rawFixtures.engineStatusFailed, isEngineStatus, "engineStatusFailed"),
+    engineStatusLoading: checked(rawFixtures.engineStatusLoading, isEngineStatus, "engineStatusLoading"),
     modelsGgml: checked(rawFixtures.modelsGgml, isModelsOverview, "modelsGgml"),
     modelsOnnx: checked(rawFixtures.modelsOnnx, isModelsOverview, "modelsOnnx"),
     modelProgress: checked(rawFixtures.modelProgress, isModelProgress, "modelProgress"),
@@ -248,6 +259,9 @@ describe("fixtures do contrato Rust ↔ TypeScript", () => {
       await act(async () => emitTauriEvent(ENGINE_STATUS, fixtures.engineStatusNpuToGpu));
       expect(screen.getByText(/NPU não carregou o modelo ONNX: op sem suporte\. Usando a GPU\./)).toBeInTheDocument();
       expect(screen.getByText("Pronto · tiny · DirectML · GPU")).toBeInTheDocument();
+      await act(async () => emitTauriEvent(ENGINE_STATUS, fixtures.engineStatusLoading));
+      expect(screen.getByRole("status", { name: "Estado do motor de transcrição" }))
+        .toHaveTextContent("Carregando modelo… 20% · compilando o encoder (só na 1ª vez)");
       await act(async () => emitTauriEvent(ENGINE_STATUS, fixtures.engineStatusFailed));
       expect(screen.getByRole("status", { name: "Estado do motor de transcrição" }))
         .toHaveTextContent("Ditado indisponível: Pouca memória livre para carregar o modelo: precisa de cerca de 7,8 GB e há 3,8 GB livres.");

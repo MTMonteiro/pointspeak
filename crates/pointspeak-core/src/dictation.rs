@@ -79,7 +79,8 @@ pub enum TrayStatus {
     Recording,
     Transcribing,
     Paused,
-    LoadingModel,
+    /// Com a porcentagem estimada da carga, quando já se sabe (`load_progress`).
+    LoadingModel(Option<u8>),
     NoModel,
 }
 
@@ -90,7 +91,8 @@ impl fmt::Display for TrayStatus {
             TrayStatus::Recording => f.write_str("Gravando…"),
             TrayStatus::Transcribing => f.write_str("Transcrevendo…"),
             TrayStatus::Paused => f.write_str("Pausado"),
-            TrayStatus::LoadingModel => f.write_str("Carregando modelo…"),
+            TrayStatus::LoadingModel(None) => f.write_str("Carregando modelo…"),
+            TrayStatus::LoadingModel(Some(percent)) => write!(f, "Carregando modelo… {percent}%"),
             TrayStatus::NoModel => f.write_str("Nenhum modelo ativo — abra as Configurações"),
         }
     }
@@ -115,6 +117,8 @@ pub enum Input {
     Pause,
     Resume,
     Model(ModelStatus),
+    /// Porcentagem estimada da carga em andamento (só vale com o modelo em `Loading`).
+    LoadProgress(u8),
     /// Atalho (texto normalizado) ou modo mudaram no `set_config`.
     ConfigChanged {
         hotkey: String,
@@ -154,6 +158,8 @@ pub struct Dictation {
     hotkey_label: String,
     paused: bool,
     model: ModelStatus,
+    /// Porcentagem da carga em andamento ([`Input::LoadProgress`]).
+    load_percent: Option<u8>,
     /// Última linha de estado enviada à bandeja (para só mandar mudanças).
     tray: Option<TrayStatus>,
 }
@@ -167,6 +173,7 @@ impl Dictation {
             hotkey_label: hotkey_label.into(),
             paused: false,
             model,
+            load_percent: None,
             tray: None,
         }
     }
@@ -190,7 +197,7 @@ impl Dictation {
             HudState::Transcribing => TrayStatus::Transcribing,
             _ if self.paused => TrayStatus::Paused,
             _ => match self.model {
-                ModelStatus::Loading => TrayStatus::LoadingModel,
+                ModelStatus::Loading => TrayStatus::LoadingModel(self.load_percent),
                 ModelStatus::NotSelected | ModelStatus::Failed => TrayStatus::NoModel,
                 ModelStatus::Loaded | ModelStatus::Released => {
                     TrayStatus::Ready(self.hotkey_label.clone())
@@ -258,7 +265,14 @@ impl Dictation {
                 self.hotkey = HotkeyController::new();
                 effects.push(Effect::SetPaused(false));
             }
-            Input::Model(status) => self.model = status,
+            Input::Model(status) => {
+                // Carga nova (ou fim da carga): a porcentagem recomeça.
+                self.load_percent = None;
+                self.model = status;
+            }
+            Input::LoadProgress(percent) if self.model == ModelStatus::Loading => {
+                self.load_percent = Some(percent);
+            }
             Input::ConfigChanged { hotkey, mode } => {
                 self.hotkey_label = hotkey;
                 self.mode = mode;
@@ -727,8 +741,13 @@ mod tests {
         assert_eq!(d.start(), [Effect::UpdateTray(TrayStatus::NoModel)]);
         assert_eq!(
             d.handle(Input::Model(ModelStatus::Loading)),
-            [Effect::UpdateTray(TrayStatus::LoadingModel)]
+            [Effect::UpdateTray(TrayStatus::LoadingModel(None))]
         );
+        assert_eq!(
+            d.handle(Input::LoadProgress(40)),
+            [Effect::UpdateTray(TrayStatus::LoadingModel(Some(40)))]
+        );
+        assert_eq!(d.handle(Input::LoadProgress(40)), []);
         assert_eq!(
             d.handle(Input::Model(ModelStatus::Loaded)),
             [Effect::UpdateTray(ready())]
@@ -746,6 +765,8 @@ mod tests {
         );
         // Modelo liberado da memória continua "pronto" na bandeja (o ditado recarrega).
         assert_eq!(d.handle(Input::Model(ModelStatus::Released)), []);
+        // Fora de uma carga, o progresso não muda nada.
+        assert_eq!(d.handle(Input::LoadProgress(50)), []);
         assert_eq!(
             d.handle(Input::Model(ModelStatus::Failed)),
             [Effect::UpdateTray(TrayStatus::NoModel)]
@@ -787,7 +808,8 @@ mod tests {
             TrayStatus::Recording,
             TrayStatus::Transcribing,
             TrayStatus::Paused,
-            TrayStatus::LoadingModel,
+            TrayStatus::LoadingModel(None),
+            TrayStatus::LoadingModel(Some(60)),
             TrayStatus::NoModel,
         ]
         .iter()
@@ -801,6 +823,7 @@ mod tests {
                 "Transcrevendo…",
                 "Pausado",
                 "Carregando modelo…",
+                "Carregando modelo… 60%",
                 "Nenhum modelo ativo — abra as Configurações",
             ]
         );

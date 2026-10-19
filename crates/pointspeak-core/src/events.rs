@@ -35,6 +35,7 @@ use crate::dictation::ModelStatus;
 use crate::engine::DmlDevice;
 use crate::hud::HudState;
 use crate::hud_layout::HudAnchor;
+use crate::load_progress::LoadProgressPayload;
 use crate::models::ModelState;
 
 /// Nome do evento emitido a cada transição da máquina de estados do HUD.
@@ -205,6 +206,9 @@ pub struct EngineStatusPayload {
     /// para carregar o modelo: …`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub load_error: Option<String>,
+    /// Só com `status: loading`, quando a carga já começou: porcentagem estimada e etapa.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub load_progress: Option<LoadProgressPayload>,
 }
 
 /// Por que o teste de microfone parou sozinho.
@@ -267,6 +271,7 @@ mod tests {
             device: None,
             device_fallback_reason: None,
             load_error: None,
+            load_progress: None,
         };
         // Sem fallback, `fallbackReason` não aparece.
         assert_eq!(
@@ -313,6 +318,7 @@ mod tests {
             device: None,
             device_fallback_reason: None,
             load_error: None,
+            load_progress: None,
         };
         assert_eq!(
             serde_json::to_value(none).unwrap(),
