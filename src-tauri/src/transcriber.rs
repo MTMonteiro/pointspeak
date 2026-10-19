@@ -7,8 +7,10 @@
 //!
 //! [`ensure_loaded`] monta o plano do config ([`plan`]: backend efetivo, variantes no disco) e
 //! carrega pela regra do núcleo (`pointspeak_core::engine::load_with_fallback`): se a ONNX não dá
-//! (variante não baixada, EP que não inicia, modelo que não abre), cai para o whisper.cpp na CPU e
-//! guarda o motivo, que o `engine://status` mostra. No DirectML cada dispositivo (NPU, GPU) ainda
+//! (variante não baixada, EP que não inicia, modelo que não abre, dispositivo que reprova), cai para
+//! o whisper.cpp na CPU ou, sem o ggml no disco, para a própria engine ONNX na CPU EP (o closure
+//! ONNX com `Backend::Cpu`: sem DirectML nem verificação de sanidade), e guarda o motivo, que o
+//! `engine://status` mostra. No DirectML cada dispositivo (NPU, GPU) ainda
 //! passa pela verificação de sanidade ([`check_device`]): se calcula diferente da CPU numa entrada
 //! fixa, conta como falha e o próximo dispositivo assume. O [`EngineSlot`] do `AppState` guarda a engine
 //! pela chave modelo + backend efetivo e troca (hot-swap) liberando a antiga antes; o que roda de
@@ -240,12 +242,19 @@ fn check_device(
     let Some(reference) = reference else {
         return Ok(());
     };
-    let score = engine
-        .probe_score(reference)
+    let report = engine
+        .probe_report(reference)
         .map_err(|e| OnnxLoadError::Model(format!("verificação de sanidade: {e}")))?;
+    // Uma linha por passo (encoder e cada passo do decoder): quando o DirectML reprova, é o que
+    // diz se foi NaN/infinito, tamanho, encoder ou decoder (checklist manual 8.22).
+    for line in report.log_lines() {
+        log::info!("verificação de sanidade ({label}) {line}");
+        eprintln!("[pointspeak] verificação de sanidade ({label}) {line}");
+    }
+    let score = report.score;
     log::info!("verificação de sanidade ({label}): correlação {score:.4}");
     eprintln!("[pointspeak] verificação de sanidade ({label}): correlação {score:.4}");
-    probe_verdict(score).map_err(OnnxLoadError::Diverged)
+    probe_verdict(&report).map_err(OnnxLoadError::Diverged)
 }
 
 /// Garante a engine do config no slot e roda `f` nela. O `bool` diz se a engine foi carregada

@@ -14,8 +14,9 @@
 //! saem no primeiro passo e não mudam no resto do trecho.
 //!
 //! Verificação de sanidade (DirectML): [`cpu_probe_reference`] roda a entrada fixa do núcleo
-//! (`whisper_onnx::sanity`) no mesmo modelo na CPU e [`OrtWhisperTranscriber::probe_score`] compara o
-//! dispositivo com ela; quem decide e cai para o próximo dispositivo é o `transcriber.rs`.
+//! (`whisper_onnx::sanity`) no mesmo modelo na CPU e [`OrtWhisperTranscriber::probe_report`] compara o
+//! dispositivo com ela (saída do encoder e logits de cada passo); quem decide e cai para o próximo
+//! dispositivo é o `transcriber.rs`.
 
 use std::fs;
 use std::path::Path;
@@ -30,7 +31,7 @@ use pointspeak_core::engine::{DmlDevice, OnnxLoadError};
 use pointspeak_core::models::OnnxModelInfo;
 use pointspeak_core::transcriber::{TranscribeError, TranscribeOptions, Transcriber};
 use pointspeak_core::whisper_onnx::mel::N_FRAMES;
-use pointspeak_core::whisper_onnx::sanity::{self, ProbeReference};
+use pointspeak_core::whisper_onnx::sanity::{self, ProbeReference, ProbeReport};
 use pointspeak_core::whisper_onnx::{
     transcribe_chunks, DecoderStep, LogMel, WhisperModel, WhisperVocab, DEFAULT_MAX_NEW_TOKENS,
 };
@@ -126,11 +127,13 @@ impl OrtWhisperTranscriber {
         self.backend
     }
 
-    /// Menor correlação dos logits desta engine com os da `reference` na entrada fixa
-    /// ([`sanity::probe_score`]).
-    pub fn probe_score(&mut self, reference: &ProbeReference) -> Result<f32, TranscribeError> {
+    /// Compara esta engine com a `reference` na entrada fixa ([`sanity::probe_report`]).
+    pub fn probe_report(
+        &mut self,
+        reference: &ProbeReference,
+    ) -> Result<ProbeReport, TranscribeError> {
         let (mut model, log_mel, _) = self.parts();
-        sanity::probe_score(&mut model, log_mel, reference)
+        sanity::probe_report(&mut model, log_mel, reference)
     }
 
     fn parts(&mut self) -> (OrtModel<'_>, &LogMel, &WhisperVocab) {
@@ -387,6 +390,11 @@ impl DecoderStep for OrtDecoderStep<'_> {
         self.processed = tokens.len();
         Ok(logits)
     }
+
+    fn encoder_output(&self) -> Option<Vec<f32>> {
+        let (_, data) = self.hidden.try_extract_tensor::<f32>().ok()?;
+        Some(data.to_vec())
+    }
 }
 
 #[cfg(test)]
@@ -450,9 +458,12 @@ mod tests {
         // Verificação de sanidade: a CPU contra ela mesma passa com folga.
         let info = ModelId::Tiny.onnx_info();
         let reference = cpu_probe_reference(&environment, Path::new(&dir), info).unwrap();
-        let score = engine.probe_score(&reference).unwrap();
-        eprintln!("sanidade CPU × CPU: {score}");
-        assert_eq!(sanity::probe_verdict(score), Ok(()));
+        let report = engine.probe_report(&reference).unwrap();
+        for line in report.log_lines() {
+            eprintln!("sanidade CPU × CPU: {line}");
+        }
+        assert!(report.encoder.is_some());
+        assert_eq!(sanity::probe_verdict(&report), Ok(()));
         // Outro modelo (`POINTSPEAK_TEST_ONNX_OTHER`, ex. onnx-base) faz o papel do dispositivo que
         // calcula errado: precisa reprovar.
         if let Ok(other) = std::env::var("POINTSPEAK_TEST_ONNX_OTHER") {
@@ -464,9 +475,12 @@ mod tests {
                 None,
             )
             .unwrap_or_else(|e| panic!("{e:?}"));
-            let score = wrong.probe_score(&reference).unwrap();
-            eprintln!("sanidade outro modelo × CPU: {score}");
-            assert!(sanity::probe_verdict(score).is_err());
+            let report = wrong.probe_report(&reference).unwrap();
+            for line in report.log_lines() {
+                eprintln!("sanidade outro modelo × CPU: {line}");
+            }
+            eprintln!("{:?}", sanity::probe_verdict(&report));
+            assert!(sanity::probe_verdict(&report).is_err());
         }
     }
 }

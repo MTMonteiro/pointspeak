@@ -16,6 +16,12 @@ pub trait DecoderStep {
     /// Dentro de uma decodificação o histórico só cresce: cada chamada repete o anterior e
     /// acrescenta tokens no fim, então a engine pode guardar o KV cache e rodar só os novos.
     fn next_logits(&mut self, tokens: &[u32]) -> Result<Vec<f32>, TranscribeError>;
+
+    /// Saída do encoder deste trecho (`last_hidden_state`, achatada), para a verificação de
+    /// sanidade separar encoder e decoder; `None` se a engine não expõe.
+    fn encoder_output(&self) -> Option<Vec<f32>> {
+        None
+    }
 }
 
 /// Resultado de um trecho.
