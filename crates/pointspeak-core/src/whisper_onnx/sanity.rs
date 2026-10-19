@@ -271,14 +271,16 @@ pub fn correlation(a: &[f32], b: &[f32]) -> f32 {
 }
 
 /// `Ok` se o `score` do relatório passa; senão o motivo curto para o log e o status, com o motivo
-/// dominante ([`ProbeReport::log_lines`] tem os números).
+/// dominante ([`ProbeReport::log_lines`] tem os números). O motivo vem antes da correlação: o
+/// texto passa por `engine::summarize_error` (corte em `MAX_ERROR_CHARS`) e o que se perde no
+/// corte são os números, não o motivo.
 pub fn probe_verdict(report: &ProbeReport) -> Result<(), String> {
     let score = report.score;
     if score >= MIN_CORRELATION {
         Ok(())
     } else {
         Err(format!(
-            "resultado diverge da CPU (correlação {score:.2}, mínimo {MIN_CORRELATION:.2}; {})",
+            "resultado diverge da CPU ({}; correlação {score:.2}, mínimo {MIN_CORRELATION:.2})",
             report.dominant_reason()
         ))
     }
@@ -287,6 +289,7 @@ pub fn probe_verdict(report: &ProbeReport) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::engine::summarize_error;
     use crate::whisper_onnx::decoder::DecoderStep;
     use crate::whisper_onnx::mel::{N_FRAMES, N_MELS_80};
     use crate::whisper_onnx::tokenizer::tests::vocab;
@@ -533,7 +536,10 @@ mod tests {
             assert!(report.score < 0.5, "passo {from}: {report:?}");
             assert!(err.starts_with("resultado diverge da CPU"), "{err}");
             assert!(
-                err.ends_with(&format!("; decoder diverge no passo {})", from + 1)),
+                err.contains(&format!(
+                    "(decoder diverge no passo {}; correlação",
+                    from + 1
+                )),
                 "{err}"
             );
         }
@@ -549,10 +555,15 @@ mod tests {
         ] {
             let report = probe_report(&mut fake(0.0, Some((0, fault))), &mel, &reference).unwrap();
             assert_eq!(report.score, 0.0, "{reason}");
+            let err = probe_verdict(&report).unwrap_err();
             assert_eq!(
-                probe_verdict(&report).unwrap_err(),
-                format!("resultado diverge da CPU (correlação 0.00, mínimo 0.95; {reason})")
+                err,
+                format!("resultado diverge da CPU ({reason}; correlação 0.00, mínimo 0.95)")
             );
+            // O aviso do status e o "O modelo não carregou: …" cortam em 120 caracteres: o motivo
+            // precisa sobrar mesmo no texto mais longo (prefixo do fallback + tamanho).
+            let shown = summarize_error(&format!("DirectML reprovou na verificação: {err}"));
+            assert!(shown.contains(reason), "{shown}");
         }
         let short = probe_report(&mut fake(0.0, Some((0, Fault::Short))), &mel, &reference)
             .unwrap()
@@ -578,7 +589,7 @@ mod tests {
         assert!(encoder.correlation < 0.5, "{encoder:?}");
         assert_eq!(encoder.nan + encoder.infinite, 0);
         let err = probe_verdict(&report).unwrap_err();
-        assert!(err.ends_with("; encoder diverge)"), "{err}");
+        assert!(err.contains("(encoder diverge; correlação"), "{err}");
     }
 
     #[test]
