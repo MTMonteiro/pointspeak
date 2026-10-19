@@ -16,7 +16,7 @@ pub const SILENCE_TIMEOUT_RANGE_MS: RangeInclusive<u32> = 500..=10_000;
 /// Faixa aceita para a duração máxima de uma gravação.
 pub const MAX_RECORDING_RANGE_SECS: RangeInclusive<u32> = 1..=3_600;
 /// Faixa aceita para liberar o modelo da memória sem uso (0 = nunca).
-pub const UNLOAD_IDLE_RANGE_MINS: RangeInclusive<u32> = 0..=240;
+pub const UNLOAD_IDLE_RANGE_MINS: RangeInclusive<u32> = 0..=1440;
 
 /// Modelos Whisper suportados (reutilizado pelo Model Manager).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -136,7 +136,7 @@ pub enum ConfigError {
     SilenceTimeout,
     #[error("A gravação máxima deve ficar entre 1 e 3600 segundos.")]
     MaxRecording,
-    #[error("O tempo para liberar a memória deve ficar entre 0 e 240 minutos.")]
+    #[error("O tempo para liberar a memória deve ficar entre 0 e 1440 minutos (24 horas).")]
     UnloadIdle,
 }
 
@@ -347,7 +347,13 @@ mod tests {
 
     #[test]
     fn validate_checks_unload_idle_and_accepts_double_tap() {
-        for (mins, ok) in [(0, true), (15, true), (240, true), (241, false)] {
+        for (mins, ok) in [
+            (0, true),
+            (15, true),
+            (90, true),
+            (1440, true),
+            (1441, false),
+        ] {
             let c = AppConfig {
                 unload_idle_mins: mins,
                 ..AppConfig::default()
@@ -355,7 +361,7 @@ mod tests {
             assert_eq!(c.validate().is_ok(), ok, "{mins} min");
         }
         let c = AppConfig {
-            unload_idle_mins: 999,
+            unload_idle_mins: 9999,
             hotkey: "Alt+Alt".into(),
             ..AppConfig::default()
         };

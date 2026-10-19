@@ -99,6 +99,31 @@ describe("liberar a memória do modelo", () => {
     fireEvent.change(select, { target: { value: "15" } });
     await waitFor(() => expect(getInvokeCallsFor("set_config").map((call) => (call.args?.config as { unloadIdleMins: number }).unloadIdleMins)).toEqual([15]));
   });
+
+  it("aceita um tempo personalizado e recusa o que está fora de 1 a 1440 minutos", async () => {
+    mockTauri(ENGINE_NPU);
+    await openHardware();
+    const savedMinutes = () => getInvokeCallsFor("set_config").map((call) => (call.args?.config as { unloadIdleMins: number }).unloadIdleMins);
+    expect(screen.queryByLabelText("Minutos sem uso até liberar")).not.toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("Liberar a memória do modelo"), { target: { value: "custom" } });
+    const minutes = await screen.findByLabelText("Minutos sem uso até liberar");
+    expect(savedMinutes()).toEqual([]);
+
+    fireEvent.change(minutes, { target: { value: "2000" } });
+    fireEvent.blur(minutes);
+    expect(await screen.findByText("Digite um número inteiro de minutos, de 1 a 1440 (24 horas).")).toBeInTheDocument();
+    expect(savedMinutes()).toEqual([]);
+
+    fireEvent.change(minutes, { target: { value: "90" } });
+    fireEvent.keyDown(minutes, { key: "Enter" });
+    await waitFor(() => expect(savedMinutes()).toEqual([90]));
+    expect(screen.getByLabelText("Liberar a memória do modelo")).toHaveValue("custom");
+    expect(screen.getByLabelText("Minutos sem uso até liberar")).toHaveValue(90);
+
+    fireEvent.change(screen.getByLabelText("Liberar a memória do modelo"), { target: { value: "5" } });
+    await waitFor(() => expect(savedMinutes()).toEqual([90, 5]));
+    expect(screen.queryByLabelText("Minutos sem uso até liberar")).not.toBeInTheDocument();
+  });
 });
 
 describe("modelo ativo sem o formato do modo escolhido", () => {

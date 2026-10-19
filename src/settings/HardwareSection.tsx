@@ -23,7 +23,7 @@ const BACKEND_DETAILS: Record<BackendOption["backend"], string> = {
 
 type ListState = "loading" | "ready" | "error";
 
-/** Choices for `unloadIdleMins` (0 = keep the model in memory). */
+/** Choices for `unloadIdleMins` (0 = keep the model in memory); "Personalizado…" takes any minutes. */
 const UNLOAD_IDLE_OPTIONS: { value: number; label: string }[] = [
   { value: 0, label: "Nunca (o ditado começa na hora)" },
   { value: 5, label: "Depois de 5 minutos sem uso" },
@@ -31,6 +31,16 @@ const UNLOAD_IDLE_OPTIONS: { value: number; label: string }[] = [
   { value: 30, label: "Depois de 30 minutos sem uso" },
   { value: 60, label: "Depois de 1 hora sem uso" },
 ];
+const UNLOAD_IDLE_CUSTOM = "custom";
+/** Mirrors `UNLOAD_IDLE_RANGE_MINS` (24 hours). */
+const UNLOAD_IDLE_MAX_MINS = 1440;
+
+/** Minutes typed in the custom field, or undefined when not a whole number in 1..=max. */
+function parseIdleMinutes(text: string): number | undefined {
+  if (!/^\d+$/.test(text.trim())) return undefined;
+  const minutes = Number(text.trim());
+  return minutes >= 1 && minutes <= UNLOAD_IDLE_MAX_MINS ? minutes : undefined;
+}
 
 export function HardwareSection({
   config,
@@ -50,6 +60,28 @@ export function HardwareSection({
   onRefreshEngineStatus: () => Promise<void>;
 }) {
   const [backends, setBackends] = useState<BackendOption[]>([]);
+  const idlePreset = UNLOAD_IDLE_OPTIONS.some((option) => option.value === config.unloadIdleMins);
+  const [idleCustomChosen, setIdleCustomChosen] = useState(false);
+  const idleCustom = idleCustomChosen || !idlePreset;
+  const [idleDraft, setIdleDraft] = useState(String(config.unloadIdleMins));
+  const [idleError, setIdleError] = useState<string>();
+  // O valor salvo mudou (aqui ou de fora): o campo volta a mostrá-lo.
+  const [idleSaved, setIdleSaved] = useState(config.unloadIdleMins);
+  if (idleSaved !== config.unloadIdleMins) {
+    setIdleSaved(config.unloadIdleMins);
+    setIdleDraft(String(config.unloadIdleMins));
+    setIdleError(undefined);
+  }
+
+  const commitIdleDraft = () => {
+    const minutes = parseIdleMinutes(idleDraft);
+    if (minutes === undefined) {
+      setIdleError(`Digite um número inteiro de minutos, de 1 a ${UNLOAD_IDLE_MAX_MINS} (24 horas).`);
+      return;
+    }
+    setIdleError(undefined);
+    if (minutes !== config.unloadIdleMins) onUnloadIdleChange(minutes);
+  };
   const [listState, setListState] = useState<ListState>("loading");
   const [loadError, setLoadError] = useState<string>();
 
@@ -241,16 +273,54 @@ export function HardwareSection({
           <Select
             id="unload-idle"
             label="Liberar a memória do modelo"
-            value={String(config.unloadIdleMins)}
+            value={idleCustom ? UNLOAD_IDLE_CUSTOM : String(config.unloadIdleMins)}
             disabled={!ready}
             hint="O modelo ocupa de 300 MB a 4 GB de RAM enquanto fica carregado. Liberado, ele carrega de novo quando você aperta o atalho, enquanto fala; ditados muito curtos logo depois podem esperar alguns segundos."
-            onChange={(event) => onUnloadIdleChange(Number(event.currentTarget.value))}
+            onChange={(event) => {
+              const { value } = event.currentTarget;
+              if (value === UNLOAD_IDLE_CUSTOM) {
+                // Só salva quando os minutos forem digitados.
+                setIdleCustomChosen(true);
+                setIdleDraft(config.unloadIdleMins > 0 ? String(config.unloadIdleMins) : "");
+                setIdleError(undefined);
+                return;
+              }
+              setIdleCustomChosen(false);
+              onUnloadIdleChange(Number(value));
+            }}
           >
-            {(UNLOAD_IDLE_OPTIONS.some((option) => option.value === config.unloadIdleMins)
-              ? UNLOAD_IDLE_OPTIONS
-              : [...UNLOAD_IDLE_OPTIONS, { value: config.unloadIdleMins, label: `Depois de ${config.unloadIdleMins} minutos sem uso` }]
-            ).map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+            {UNLOAD_IDLE_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+            <option value={UNLOAD_IDLE_CUSTOM}>Personalizado…</option>
           </Select>
+          {idleCustom && (
+            <div className="settings-field">
+              <label className="settings-field-label" htmlFor="unload-idle-minutes">Minutos sem uso até liberar</label>
+              <div className="settings-inline">
+                <input
+                  id="unload-idle-minutes"
+                  className="settings-select settings-number"
+                  type="number"
+                  inputMode="numeric"
+                  min={1}
+                  max={UNLOAD_IDLE_MAX_MINS}
+                  step={1}
+                  value={idleDraft}
+                  disabled={!ready}
+                  aria-invalid={idleError ? true : undefined}
+                  aria-describedby={idleError ? "unload-idle-minutes-error" : "unload-idle-minutes-hint"}
+                  onChange={(event) => setIdleDraft(event.currentTarget.value)}
+                  onBlur={commitIdleDraft}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") commitIdleDraft();
+                  }}
+                />
+                <span>minutos</span>
+              </div>
+              {idleError
+                ? <p className="settings-error-text" id="unload-idle-minutes-error">{idleError}</p>
+                : <p className="settings-hint" id="unload-idle-minutes-hint">De 1 a {UNLOAD_IDLE_MAX_MINS} minutos (24 horas). Salva ao sair do campo ou apertar Enter.</p>}
+            </div>
+          )}
           <p className="settings-hint">Os backends indisponíveis mostram o motivo e não podem ser selecionados.</p>
         </>
       )}

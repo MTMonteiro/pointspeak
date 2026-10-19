@@ -152,6 +152,8 @@
 
 .settings-select[aria-invalid="true"] { border-color: var(--color-danger); }
 .settings-select:disabled { color: var(--color-text-disabled); background: var(--color-surface-2); }
+.settings-inline { display: flex; align-items: center; gap: 8px; }
+.settings-number { width: 120px; }
 
 .settings-button-wrap { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 6px; }
 .settings-button {
