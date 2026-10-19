@@ -3,7 +3,9 @@
 //! Carregar um modelo usa bem mais RAM do que ele ocupa depois de pronto (o ONNX Runtime lê o
 //! arquivo, a EP copia os pesos, o OpenVINO lê o blob compilado da NPU). Se o pico não cabe na
 //! memória livre, o Windows passa a usar o arquivo de paginação e a máquina trava por segundos;
-//! o app confere antes ([`memory_shortage`]) e avisa em vez de carregar.
+//! o app confere antes ([`memory_shortage`]) e avisa em vez de carregar. Um pico até
+//! [`TOLERANCE_PERCENT`] acima da memória livre ainda passa: o Windows tira da RAM as páginas
+//! paradas de outros programas (abas inativas, por exemplo) sem travar.
 //!
 //! Medido no Core Ultra X7 358H (pico do processo inteiro, `PeakWorkingSet`), arquivos do modelo
 //! → pico:
@@ -34,9 +36,14 @@ pub fn load_peak_bytes(kind: EngineKind, backend: Backend, model_bytes: u64) -> 
     fixed_mib * MIB + model_bytes * factor_tenths / 10
 }
 
-/// Mensagem quando o pico `needed` não cabe nos `available` bytes livres; `None` se cabe.
+/// Quanto o pico pode passar da memória livre (em %) antes de a carga ser recusada.
+pub const TOLERANCE_PERCENT: u64 = 50;
+
+/// Mensagem quando o pico `needed` não cabe nos `available` bytes livres (com a
+/// [`TOLERANCE_PERCENT`]); `None` se cabe.
 pub fn memory_shortage(needed: u64, available: u64) -> Option<String> {
-    (available < needed).then(|| {
+    let limit = available.saturating_mul(100 + TOLERANCE_PERCENT) / 100;
+    (limit < needed).then(|| {
         format!(
             "Pouca memória livre para carregar o modelo: precisa de cerca de {} e há {} livres. Feche alguns programas ou escolha um modelo menor.",
             gigabytes(needed),
@@ -89,6 +96,9 @@ mod tests {
     #[test]
     fn shortage_only_when_the_peak_does_not_fit() {
         assert_eq!(memory_shortage(4 * 1024 * MB, 4 * 1024 * MB), None);
+        // Até 50% acima da memória livre ainda passa.
+        assert_eq!(memory_shortage(6_000 * MB, 4_000 * MB), None);
+        assert!(memory_shortage(6_001 * MB, 4_000 * MB).is_some());
         assert_eq!(
             memory_shortage(7_700 * MB, 4_300 * MB).as_deref(),
             Some("Pouca memória livre para carregar o modelo: precisa de cerca de 7,5 GB e há 4,2 GB livres. Feche alguns programas ou escolha um modelo menor.")
