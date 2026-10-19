@@ -113,4 +113,5 @@ jobs:
           name: PointSpeak ${{ env.TAG }}
           draft: true
           generate_release_notes: true
-          files: dist/*
+          # Os artefatos mantêm as subpastas (deb/, appimage/).
+          files: dist/**/*
