@@ -133,10 +133,12 @@ pub fn set_config(
     Ok(config)
 }
 
-/// Backend trocado: a engine é solta (o próximo ditado recarrega, a menos que o modelo também
+/// Backend trocado: a engine é solta e recarregada já no backend novo (a menos que o modelo também
 /// tenha mudado e o `reload_model` já esteja carregando), o `engine://status` é reemitido e a lista
-/// de modelos também, porque a variante (ggml/ONNX) pode ter mudado. Numa thread: soltar a engine
-/// espera uma transcrição em andamento e a variante pode esperar a detecção de hardware.
+/// de modelos também, porque a variante (ggml/ONNX) pode ter mudado. Recarregar aqui, e não no
+/// próximo ditado, tira dele a carga e a verificação de sanidade (~10 s no large-v3-turbo). Numa
+/// thread: soltar a engine espera uma transcrição em andamento e a variante pode esperar a detecção
+/// de hardware.
 fn backend_changed_in_background(app: &AppHandle, model_changed: bool) {
     let app = app.clone();
     let spawned = std::thread::Builder::new()
@@ -144,6 +146,7 @@ fn backend_changed_in_background(app: &AppHandle, model_changed: bool) {
         .spawn(move || {
             if !model_changed {
                 crate::transcriber::unload(&app);
+                dictation::reload_model(&app);
             }
             crate::settings::refresh_engine_status(&app);
             crate::models::emit_all(&app);

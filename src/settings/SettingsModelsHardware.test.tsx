@@ -13,6 +13,7 @@ type TestConfig = {
   silenceTimeoutMs: number;
   backend: string;
   maxRecordingSecs: number;
+  unloadIdleMins: number;
   outputMode: string;
 };
 
@@ -26,6 +27,7 @@ const CONFIG: TestConfig = {
   silenceTimeoutMs: 2500,
   backend: "auto",
   maxRecordingSecs: 300,
+  unloadIdleMins: 0,
   outputMode: "paste",
 };
 

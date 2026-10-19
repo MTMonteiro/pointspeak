@@ -34,6 +34,8 @@ export type AppConfig = {
   backend: Backend;
   maxRecordingSecs: number;
   outputMode: OutputMode;
+  /** Minutes without dictation before the model leaves memory (0 = never). */
+  unloadIdleMins: number;
 };
 
 /** Shape returned by `list_microphones` (Rust `MicrophoneInfo`). */
@@ -55,7 +57,8 @@ export const DML_DEVICE_LABELS: Record<DmlDevice, string> = { npu: "NPU", gpu: "
 /** Mirrors `EngineStatusPayload`, shared by `get_engine_status` and `engine://status`. */
 export type EngineStatus = {
   model: ModelId | null;
-  status: "notSelected" | "loading" | "loaded" | "failed";
+  /** `released`: the model left memory after `unloadIdleMins`; the next dictation loads it again. */
+  status: "notSelected" | "loading" | "loaded" | "failed" | "released";
   /** Backend that really runs (CPU after a fallback). */
   backend: Backend;
   paused: boolean;

@@ -216,6 +216,176 @@ impl fmt::Display for Accelerator {
     }
 }
 
+/// Modificador que aceita toque duplo como atalho. Super fica de fora: o toque nele abre o menu
+/// Iniciar.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ModifierKey {
+    Ctrl,
+    Alt,
+    Shift,
+}
+
+impl ModifierKey {
+    /// Nome no texto do atalho (`Alt` em `Alt+Alt`).
+    pub fn label(self) -> &'static str {
+        match self {
+            ModifierKey::Ctrl => "Ctrl",
+            ModifierKey::Alt => "Alt",
+            ModifierKey::Shift => "Shift",
+        }
+    }
+
+    fn from_token(token: &str) -> Option<Self> {
+        match token.trim().to_ascii_lowercase().as_str() {
+            "ctrl" | "control" => Some(ModifierKey::Ctrl),
+            "alt" | "option" => Some(ModifierKey::Alt),
+            "shift" => Some(ModifierKey::Shift),
+            _ => None,
+        }
+    }
+}
+
+/// Atalho do ditado: uma combinação (`Alt+Z`, registrada pelo plugin de atalho global) ou o toque
+/// duplo num modificador (`Alt+Alt`, detectado pelo hook de teclado do Windows com o
+/// [`DoubleTapDetector`]).
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum Hotkey {
+    Combo(Accelerator),
+    DoubleTap(ModifierKey),
+}
+
+impl Hotkey {
+    /// `Mod+Mod` com o mesmo modificador (Ctrl, Alt ou Shift) é toque duplo; o resto segue o
+    /// [`Accelerator::parse`].
+    pub fn parse(text: &str) -> Result<Self, AcceleratorError> {
+        let tokens: Vec<&str> = text.split('+').collect();
+        if let [first, second] = tokens.as_slice() {
+            if let (Some(a), Some(b)) = (
+                ModifierKey::from_token(first),
+                ModifierKey::from_token(second),
+            ) {
+                if a == b {
+                    return Ok(Hotkey::DoubleTap(a));
+                }
+            }
+        }
+        Accelerator::parse(text).map(Hotkey::Combo)
+    }
+}
+
+impl fmt::Display for Hotkey {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Hotkey::Combo(accelerator) => accelerator.fmt(f),
+            Hotkey::DoubleTap(key) => write!(f, "{0}+{0}", key.label()),
+        }
+    }
+}
+
+/// Intervalo máximo entre soltar o 1º toque e apertar o 2º.
+pub const DOUBLE_TAP_GAP: Duration = Duration::from_millis(400);
+/// Tempo máximo segurando o 1º toque (mais que isso é o modificador sendo usado, não um toque).
+pub const TAP_MAX_HOLD: Duration = Duration::from_millis(400);
+
+/// Tecla crua vista pelo hook de teclado.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RawKey {
+    Modifier(ModifierKey),
+    /// Qualquer outra tecla (inclui Super e os modificadores fora do alvo).
+    Other,
+}
+
+/// Borda da tecla crua.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KeyEdge {
+    Down,
+    Up,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TapState {
+    Idle,
+    /// 1º toque apertado desde o instante.
+    FirstDown(Instant),
+    /// 1º toque solto no instante, limpo (nenhuma outra tecla no meio).
+    FirstUp(Instant),
+    /// 2º toque apertado: o atalho está "pressionado" até ele ser solto.
+    Active,
+}
+
+/// Toque duplo num modificador → [`KeyAction`] do atalho: `Pressed` ao apertar o 2º toque e
+/// `Released` ao soltá-lo (segurar o 2º toque é o "segurar para falar"). Um toque só conta limpo:
+/// outra tecla no meio (Alt+Tab, Ctrl+C) zera a sequência. Autorepeat é ignorado.
+#[derive(Debug, Clone)]
+pub struct DoubleTapDetector {
+    target: ModifierKey,
+    state: TapState,
+}
+
+impl DoubleTapDetector {
+    pub fn new(target: ModifierKey) -> Self {
+        Self {
+            target,
+            state: TapState::Idle,
+        }
+    }
+
+    pub fn target(&self) -> ModifierKey {
+        self.target
+    }
+
+    /// O alvo está apertado sem outra tecla no meio (1º toque ou o 2º, segurado): soltá-lo agora
+    /// fecha um toque limpo. O hook usa isso para não deixar o Alt sozinho ativar o menu.
+    pub fn holding_clean(&self) -> bool {
+        matches!(self.state, TapState::FirstDown(_) | TapState::Active)
+    }
+
+    /// Processa uma tecla crua e devolve a ação do atalho, se houver.
+    pub fn handle(&mut self, key: RawKey, edge: KeyEdge, now: Instant) -> Option<KeyAction> {
+        if key != RawKey::Modifier(self.target) {
+            // Outra tecla apertada desfaz um toque em andamento; com o atalho já pressionado
+            // (segurando o 2º toque) ela não interfere.
+            if edge == KeyEdge::Down && self.state != TapState::Active {
+                self.state = TapState::Idle;
+            }
+            return None;
+        }
+        match (edge, self.state) {
+            (KeyEdge::Down, TapState::Idle) => {
+                self.state = TapState::FirstDown(now);
+                None
+            }
+            (KeyEdge::Down, TapState::FirstUp(released)) => {
+                if now.saturating_duration_since(released) <= DOUBLE_TAP_GAP {
+                    self.state = TapState::Active;
+                    Some(KeyAction::Pressed)
+                } else {
+                    self.state = TapState::FirstDown(now);
+                    None
+                }
+            }
+            // Autorepeat do toque segurado.
+            (KeyEdge::Down, TapState::FirstDown(_) | TapState::Active) => None,
+            (KeyEdge::Up, TapState::FirstDown(pressed)) => {
+                self.state = if now.saturating_duration_since(pressed) <= TAP_MAX_HOLD {
+                    TapState::FirstUp(now)
+                } else {
+                    TapState::Idle
+                };
+                None
+            }
+            (KeyEdge::Up, TapState::Active) => {
+                self.state = TapState::Idle;
+                Some(KeyAction::Released)
+            }
+            (KeyEdge::Up, _) => {
+                self.state = TapState::Idle;
+                None
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -462,6 +632,100 @@ mod tests {
             Accelerator::parse("Ctrl+F0"),
             Err(E::UnknownKey("F0".into()))
         );
+    }
+
+    #[test]
+    fn parses_double_tap_hotkeys() {
+        assert_eq!(
+            Hotkey::parse("Alt+Alt"),
+            Ok(Hotkey::DoubleTap(ModifierKey::Alt))
+        );
+        assert_eq!(
+            Hotkey::parse(" ctrl + control "),
+            Ok(Hotkey::DoubleTap(ModifierKey::Ctrl))
+        );
+        assert_eq!(
+            Hotkey::parse("shift+shift").unwrap().to_string(),
+            "Shift+Shift"
+        );
+        assert_eq!(Hotkey::parse("Alt+z").unwrap().to_string(), "Alt+Z");
+        // Super não tem toque duplo; modificadores diferentes ou três toques continuam inválidos.
+        assert_eq!(
+            Hotkey::parse("Super+Super"),
+            Err(AcceleratorError::DuplicateModifier("Super".into()))
+        );
+        assert_eq!(
+            Hotkey::parse("Ctrl+Alt"),
+            Err(AcceleratorError::MissingModifierOrKey)
+        );
+        assert_eq!(
+            Hotkey::parse("Alt+Alt+Alt"),
+            Err(AcceleratorError::DuplicateModifier("Alt".into()))
+        );
+    }
+
+    fn tap(d: &mut DoubleTapDetector, t: Instant, hold: u64) -> [Option<KeyAction>; 2] {
+        let key = RawKey::Modifier(d.target());
+        [
+            d.handle(key, KeyEdge::Down, t),
+            d.handle(key, KeyEdge::Up, t + ms(hold)),
+        ]
+    }
+
+    #[test]
+    fn double_tap_presses_on_the_second_tap_and_releases_with_it() {
+        let t0 = Instant::now();
+        let mut d = DoubleTapDetector::new(ModifierKey::Alt);
+        let alt = RawKey::Modifier(ModifierKey::Alt);
+        assert_eq!(tap(&mut d, t0, 80), [None, None]);
+        assert_eq!(
+            d.handle(alt, KeyEdge::Down, t0 + ms(300)),
+            Some(KeyAction::Pressed)
+        );
+        // Segurando: autorepeat e outras teclas não soltam.
+        assert_eq!(d.handle(alt, KeyEdge::Down, t0 + ms(330)), None);
+        assert_eq!(d.handle(RawKey::Other, KeyEdge::Down, t0 + ms(400)), None);
+        assert_eq!(
+            d.handle(alt, KeyEdge::Up, t0 + ms(2300)),
+            Some(KeyAction::Released)
+        );
+        // Um toque isolado depois não dispara.
+        assert_eq!(tap(&mut d, t0 + ms(5000), 80), [None, None]);
+    }
+
+    #[test]
+    fn double_tap_needs_clean_quick_taps() {
+        let t0 = Instant::now();
+        let alt = RawKey::Modifier(ModifierKey::Alt);
+        // 2º toque tarde demais: vira o 1º de uma nova sequência.
+        let mut d = DoubleTapDetector::new(ModifierKey::Alt);
+        tap(&mut d, t0, 80);
+        assert_eq!(d.handle(alt, KeyEdge::Down, t0 + ms(900)), None);
+        assert_eq!(d.handle(alt, KeyEdge::Up, t0 + ms(950)), None);
+        assert_eq!(
+            d.handle(alt, KeyEdge::Down, t0 + ms(1100)),
+            Some(KeyAction::Pressed)
+        );
+        // Alt+Tab no 1º toque: não é toque.
+        let mut d = DoubleTapDetector::new(ModifierKey::Alt);
+        d.handle(alt, KeyEdge::Down, t0);
+        d.handle(RawKey::Other, KeyEdge::Down, t0 + ms(50));
+        d.handle(RawKey::Other, KeyEdge::Up, t0 + ms(80));
+        d.handle(alt, KeyEdge::Up, t0 + ms(100));
+        assert_eq!(d.handle(alt, KeyEdge::Down, t0 + ms(200)), None);
+        // Outra tecla entre os toques zera.
+        let mut d = DoubleTapDetector::new(ModifierKey::Alt);
+        tap(&mut d, t0, 80);
+        d.handle(
+            RawKey::Modifier(ModifierKey::Ctrl),
+            KeyEdge::Down,
+            t0 + ms(150),
+        );
+        assert_eq!(d.handle(alt, KeyEdge::Down, t0 + ms(200)), None);
+        // 1º toque segurado demais (o Alt sendo usado como modificador): não conta.
+        let mut d = DoubleTapDetector::new(ModifierKey::Alt);
+        tap(&mut d, t0, 600);
+        assert_eq!(d.handle(alt, KeyEdge::Down, t0 + ms(700)), None);
     }
 
     #[test]

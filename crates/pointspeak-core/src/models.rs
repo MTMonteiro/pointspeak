@@ -135,8 +135,8 @@ impl ModelVariant {
 
     /// Linha do catálogo no formato do `list_models` (o contrato JSON é o mesmo nas duas
     /// variantes). ONNX: `fileName` = pasta do modelo, `sizeBytes` = soma dos arquivos, `sha256`
-    /// vazio (são quatro arquivos; os hashes ficam no [`ONNX_CATALOG`]) e o `displaySize` do ggml,
-    /// porque as duas variantes diferem menos de 1 % no tamanho.
+    /// vazio (são cinco arquivos; os hashes ficam no [`ONNX_CATALOG`]) e o `displaySize` da
+    /// variante ONNX (desde o decoder with past ela é maior que o ggml).
     pub fn entry_info(self, id: ModelId) -> ModelInfo {
         let ggml = *id.info();
         match self {
@@ -145,6 +145,7 @@ impl ModelVariant {
                 file_name: id.onnx_info().dir_name,
                 size_bytes: self.size_bytes(id),
                 sha256: "",
+                display_size: id.onnx_info().display_size,
                 ..ggml
             },
         }
@@ -195,8 +196,10 @@ impl ModelFile {
     }
 }
 
-/// Um modelo do catálogo ONNX: export do `onnx-community` no Hugging Face (encoder + decoder
-/// "merged", que tem o KV cache, em fp16) e o vocabulário.
+/// Um modelo do catálogo ONNX: export do `onnx-community` no Hugging Face (encoder, decoder
+/// "merged" e decoder "with past", em fp16) e o vocabulário. O merged roda o 1º passo de cada
+/// trecho (sem KV cache) e o with past os seguintes: o ramo com cache do merged (nó `If`) devolve
+/// NaN no DirectML.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OnnxModelInfo {
@@ -207,18 +210,28 @@ pub struct OnnxModelInfo {
     pub revision: &'static str,
     /// Pasta do modelo dentro da pasta dos modelos.
     pub dir_name: &'static str,
+    /// Soma dos arquivos para a interface, no critério do ggml (MiB/GiB arredondados para cima).
+    pub display_size: &'static str,
     /// Bandas do log-mel que o encoder espera.
     pub n_mels: usize,
     pub encoder: ModelFile,
     pub decoder: ModelFile,
+    /// `decoder_with_past_model_fp16.onnx`: os passos com KV cache.
+    pub decoder_with_past: ModelFile,
     pub vocab: ModelFile,
     pub added_tokens: ModelFile,
 }
 
 impl OnnxModelInfo {
     /// Arquivos na ordem do download (o vocabulário primeiro, por ser pequeno).
-    pub fn files(&self) -> [ModelFile; 4] {
-        [self.vocab, self.added_tokens, self.encoder, self.decoder]
+    pub fn files(&self) -> [ModelFile; 5] {
+        [
+            self.vocab,
+            self.added_tokens,
+            self.encoder,
+            self.decoder,
+            self.decoder_with_past,
+        ]
     }
 
     /// URL de download de um arquivo, no commit fixado.
@@ -252,8 +265,10 @@ const MULTILINGUAL_ADDED_TOKENS: ModelFile = ModelFile {
 /// Encoder e decoder: tamanho e SHA-256 do campo `lfs` (`oid sha256`) de
 /// `https://huggingface.co/api/models/<repo>/tree/<revision>?recursive=true`, conferido em
 /// 2026-10-18. `vocab.json` e `added_tokens.json` não estão no LFS: o hash foi calculado
-/// baixando cada um (`sha256sum`). Os dois `.onnx` do tiny também foram baixados e conferidos.
-/// Variante fp16 (`encoder_model_fp16.onnx` + `decoder_model_merged_fp16.onnx`): metade do
+/// baixando cada um (`sha256sum`). Os `.onnx` do tiny também foram baixados e conferidos, e o
+/// `decoder_with_past_model_fp16.onnx` do large-v3-turbo (2026-10-19).
+/// Variante fp16 (`encoder_model_fp16.onnx` + `decoder_model_merged_fp16.onnx` +
+/// `decoder_with_past_model_fp16.onnx`): metade do
 /// fp32, roda nativa no DirectML/GPU/NPU e na CPU (o ONNX Runtime insere os casts), e as
 /// entradas e saídas continuam f32. Motivo completo em `docs/tecnologia.md`.
 pub const ONNX_CATALOG: [OnnxModelInfo; 4] = [
@@ -262,6 +277,7 @@ pub const ONNX_CATALOG: [OnnxModelInfo; 4] = [
         repo: "onnx-community/whisper-tiny",
         revision: "ff4177021cc41f7db950912b73ea4fdf7d01d8e7",
         dir_name: "onnx-tiny",
+        display_size: "128 MB",
         n_mels: 80,
         encoder: ModelFile {
             path: "onnx/encoder_model_fp16.onnx",
@@ -273,6 +289,11 @@ pub const ONNX_CATALOG: [OnnxModelInfo; 4] = [
             size_bytes: 59_593_896,
             sha256: "a1aac8aa5f4e9e835e343025edf5e4d1644ab6f629c0f8c21e121868e60b3f6c",
         },
+        decoder_with_past: ModelFile {
+            path: "onnx/decoder_with_past_model_fp16.onnx",
+            size_bytes: 56_961_977,
+            sha256: "3c51c9c39e16dfc87dc2943a814df827731d8d1c4ca0ba952dcfe7fdecf0dfaa",
+        },
         vocab: MULTILINGUAL_VOCAB,
         added_tokens: MULTILINGUAL_ADDED_TOKENS,
     },
@@ -281,6 +302,7 @@ pub const ONNX_CATALOG: [OnnxModelInfo; 4] = [
         repo: "onnx-community/whisper-base",
         revision: "1846881b6b3a3024392c1eea3ad983695bc23925",
         dir_name: "onnx-base",
+        display_size: "234 MB",
         n_mels: 80,
         encoder: ModelFile {
             path: "onnx/encoder_model_fp16.onnx",
@@ -292,6 +314,11 @@ pub const ONNX_CATALOG: [OnnxModelInfo; 4] = [
             size_bytes: 104_727_818,
             sha256: "2078fb08b753e3a74120e6a52446eef1b98f6152d1da43658731367a93fd71a4",
         },
+        decoder_with_past: ModelFile {
+            path: "onnx/decoder_with_past_model_fp16.onnx",
+            size_bytes: 98_035_209,
+            sha256: "a80df24ce32fef82b8415dce6e37c09e958004b4a5a9170b4628a5cfddd82e3d",
+        },
         vocab: MULTILINGUAL_VOCAB,
         added_tokens: MULTILINGUAL_ADDED_TOKENS,
     },
@@ -300,6 +327,7 @@ pub const ONNX_CATALOG: [OnnxModelInfo; 4] = [
         repo: "onnx-community/whisper-small",
         revision: "36050c46d777d46dc4b5f43f6d90574fc38f8732",
         dir_name: "onnx-small",
+        display_size: "731 MB",
         n_mels: 80,
         encoder: ModelFile {
             path: "onnx/encoder_model_fp16.onnx",
@@ -311,6 +339,11 @@ pub const ONNX_CATALOG: [OnnxModelInfo; 4] = [
             size_bytes: 308_583_076,
             sha256: "22aba6c7f5193701cbe1519051b6ef097eb530ad6887b7093065ec59b830f61d",
         },
+        decoder_with_past: ModelFile {
+            path: "onnx/decoder_with_past_model_fp16.onnx",
+            size_bytes: 279_478_163,
+            sha256: "3a65cf85fdb5f77bda73bc22c360bc1de72b226f6c63dc3b0a0be17db640ac86",
+        },
         vocab: MULTILINGUAL_VOCAB,
         added_tokens: MULTILINGUAL_ADDED_TOKENS,
     },
@@ -319,6 +352,7 @@ pub const ONNX_CATALOG: [OnnxModelInfo; 4] = [
         repo: "onnx-community/whisper-large-v3-turbo",
         revision: "360ebcde2559d60bb474678be3c1de9ef347d01a",
         dir_name: "onnx-large-v3-turbo",
+        display_size: "1,9 GB",
         n_mels: 128,
         encoder: ModelFile {
             path: "onnx/encoder_model_fp16.onnx",
@@ -329,6 +363,11 @@ pub const ONNX_CATALOG: [OnnxModelInfo; 4] = [
             path: "onnx/decoder_model_merged_fp16.onnx",
             size_bytes: 344_227_339,
             sha256: "fdf10afca73a0c7bf87286cfb96cf7028a9edbc9bb02512509a526f95b126c9d",
+        },
+        decoder_with_past: ModelFile {
+            path: "onnx/decoder_with_past_model_fp16.onnx",
+            size_bytes: 317_771_757,
+            sha256: "e971827af2f12c152491e21594e9eecf5415ad568d6dc0d6fe794713dfbae815",
         },
         vocab: ModelFile {
             path: "vocab.json",
@@ -596,6 +635,7 @@ pub fn download_verified_files<R: Read>(
                 return Err(DownloadError::Cancelled);
             }
             let target = staging.join(item.file_name);
+            reuse_installed(&dest_dir.join(item.file_name), &target, item.expected.size);
             let complete = fs::metadata(&target)
                 .map(|m| m.is_file() && m.len() == item.expected.size)
                 .unwrap_or(false);
@@ -631,6 +671,25 @@ pub fn download_verified_files<R: Read>(
         let _ = fs::remove_dir_all(&staging);
     }
     result
+}
+
+/// Arquivo que já está na pasta final do modelo com o tamanho do catálogo (conferido no download
+/// que o instalou) entra na pasta `.part` sem baixar de novo: quando o catálogo ganha um arquivo,
+/// quem tem o modelo baixa só o que falta. Hard link (instantâneo, mesmo volume); se não der,
+/// cópia. Falha aqui não é erro: o arquivo só é baixado.
+fn reuse_installed(installed: &Path, target: &Path, size: u64) {
+    let ready = |path: &Path| {
+        fs::metadata(path)
+            .map(|m| m.is_file() && m.len() == size)
+            .unwrap_or(false)
+    };
+    if ready(target) || !ready(installed) {
+        return;
+    }
+    let _ = fs::remove_file(target);
+    if fs::hard_link(installed, target).is_err() && fs::copy(installed, target).is_err() {
+        let _ = fs::remove_file(target);
+    }
 }
 
 /// Modelos cujo arquivo final existe em `dir` com o tamanho do catálogo. Não recalcula o hash
@@ -1257,7 +1316,8 @@ mod tests {
                     "vocab.json",
                     "added_tokens.json",
                     "encoder_model_fp16.onnx",
-                    "decoder_model_merged_fp16.onnx"
+                    "decoder_model_merged_fp16.onnx",
+                    "decoder_with_past_model_fp16.onnx"
                 ]
             );
             for f in info.files() {
@@ -1286,7 +1346,7 @@ mod tests {
                 "a1aac8aa5f4e9e835e343025edf5e4d1644ab6f629c0f8c21e121868e60b3f6c"
             )
         );
-        assert_eq!(tiny.size_bytes(), 77_184_276);
+        assert_eq!(tiny.size_bytes(), 134_146_253);
         assert_eq!(
             tiny.url(&tiny.encoder),
             "https://huggingface.co/onnx-community/whisper-tiny/resolve/\
@@ -1296,7 +1356,7 @@ mod tests {
         let large = ModelId::LargeV3Turbo.onnx_info();
         assert_eq!(ModelId::Small.onnx_info().vocab, tiny.vocab);
         assert_ne!(large.added_tokens.sha256, tiny.added_tokens.sha256);
-        assert_eq!(large.size_bytes(), 1_619_641_148);
+        assert_eq!(large.size_bytes(), 1_937_412_905);
     }
 
     #[test]
@@ -1312,7 +1372,7 @@ mod tests {
             Path::new("/m/onnx-base")
         );
         assert_eq!(ModelVariant::Ggml.size_bytes(ModelId::Tiny), 77_691_713);
-        assert_eq!(ModelVariant::Onnx.size_bytes(ModelId::Tiny), 77_184_276);
+        assert_eq!(ModelVariant::Onnx.size_bytes(ModelId::Tiny), 134_146_253);
         assert_eq!(serde_json::to_value(ModelVariant::Onnx).unwrap(), "onnx");
     }
 
@@ -1430,6 +1490,38 @@ mod tests {
         assert_eq!(result, Ok(()));
         assert_eq!(opened, [1, 2]);
         assert!(!staging.exists());
+    }
+
+    #[test]
+    fn multi_file_download_reuses_files_of_the_installed_model() {
+        // Modelo instalado antes de o catálogo ganhar `dec.onnx`: só ele é baixado.
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("onnx-test");
+        let data = items_data();
+        fs::create_dir_all(&dest).unwrap();
+        for (name, bytes, _) in &data[..2] {
+            fs::write(dest.join(name), bytes).unwrap();
+        }
+        // Arquivo de tamanho errado na pasta instalada é baixado de novo.
+        fs::write(dest.join(&data[2].0), b"velho").unwrap();
+        let mut opened = Vec::new();
+        let result = download_verified_files(
+            &items(&data),
+            &dest,
+            &AtomicBool::new(false),
+            fake_clock(),
+            |i| {
+                opened.push(i);
+                Ok(ChunkReader::new(data[i].1.clone(), 1_000))
+            },
+            |_| {},
+        );
+        assert_eq!(result, Ok(()));
+        assert_eq!(opened, [2]);
+        for (name, bytes, _) in &data {
+            assert_eq!(&fs::read(dest.join(name)).unwrap(), bytes, "{name}");
+        }
+        assert!(!part_path(&dest).exists());
     }
 
     #[test]
@@ -1668,26 +1760,26 @@ mod tests {
         assert_eq!(r.variant(), ModelVariant::Onnx);
         r.apply_scan(HashSet::from([ModelId::Tiny]));
         r.begin_download(ModelId::Base).unwrap();
-        // O total do download é a soma dos 4 arquivos.
+        // O total do download é a soma dos 5 arquivos.
         assert_eq!(
             r.state(ModelId::Base, None),
             ModelState::Downloading {
                 done: 0,
-                total: 147_131_618
+                total: 245_166_827
             }
         );
-        assert_eq!(r.used_bytes(), 77_184_276);
+        assert_eq!(r.used_bytes(), 134_146_253);
         let value =
             serde_json::to_value(r.overview(Some(ModelId::Tiny), "/m".to_string())).unwrap();
-        assert_eq!(value["usedBytes"], 77_184_276);
+        assert_eq!(value["usedBytes"], 134_146_253);
         assert_eq!(
             value["models"][0],
             json!({
                 "id": "tiny",
                 "fileName": "onnx-tiny",
-                "sizeBytes": 77_184_276,
+                "sizeBytes": 134_146_253,
                 "sha256": "",
-                "displaySize": "75 MB",
+                "displaySize": "128 MB",
                 "description": "Mais rápido, menos preciso",
                 "recommended": false,
                 "state": "active"
@@ -1706,15 +1798,28 @@ mod tests {
     }
 
     #[test]
-    fn onnx_display_size_matches_ggml_within_one_percent() {
-        for info in CATALOG {
-            let onnx = ModelVariant::Onnx.size_bytes(info.id) as f64;
-            let ggml = info.size_bytes as f64;
-            assert!(((onnx - ggml) / ggml).abs() < 0.01, "{:?}", info.id);
+    fn onnx_display_size_follows_the_ggml_rounding() {
+        // Mesmo critério do ggml: MiB (ou GiB com uma casa e vírgula) arredondados para cima.
+        fn display(bytes: u64) -> String {
+            let mib = bytes as f64 / 1_048_576.0;
+            if mib < 1_024.0 {
+                format!("{} MB", mib.ceil())
+            } else {
+                format!("{:.1} GB", (mib / 1_024.0 * 10.0).ceil() / 10.0).replace('.', ",")
+            }
+        }
+        for id in [ModelId::Base, ModelId::LargeV3Turbo] {
+            assert_eq!(display(id.info().size_bytes), id.info().display_size);
+        }
+        for info in ONNX_CATALOG {
+            let entry = ModelVariant::Onnx.entry_info(info.id);
             assert_eq!(
-                ModelVariant::Onnx.entry_info(info.id).display_size,
-                info.display_size
+                entry.display_size,
+                display(info.size_bytes()),
+                "{:?}",
+                info.id
             );
+            assert_eq!(entry.display_size, info.display_size);
         }
         assert_eq!(
             ModelVariant::Ggml.entry_info(ModelId::Small),

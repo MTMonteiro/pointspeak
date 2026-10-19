@@ -74,11 +74,12 @@ if llvm-objdump -p "$APP" | grep -i 'DLL Name: onnxruntime' >/dev/null; then
   exit 1
 fi
 NSI="$ROOT/target/$TARGET/release/nsis/x64/installer.nsi"
-for dll in onnxruntime.dll DirectML.dll 'resources\silero_vad.onnx'; do
+for dll in onnxruntime.dll DirectML.dll onnxruntime_providers_openvino.dll openvino.dll \
+  openvino_intel_npu_plugin.dll 'resources\silero_vad.onnx'; do
   if ! grep -F "$dll" "$NSI" >/dev/null; then
     echo "build-windows.sh: $dll não está no instalador ($NSI)" >&2
     exit 1
   fi
 done
-echo "build-windows.sh: onnxruntime.dll, DirectML.dll e o Silero VAD no instalador; pointspeak.exe sem import estático do ONNX Runtime"
+echo "build-windows.sh: onnxruntime.dll, DirectML.dll, a EP OpenVINO e o Silero VAD no instalador; pointspeak.exe sem import estático do ONNX Runtime"
 ls -l "$EXE"

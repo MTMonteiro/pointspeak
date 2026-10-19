@@ -65,6 +65,7 @@ fn current_contracts() -> Value {
         backend: Backend::Directml,
         max_recording_secs: 180,
         output_mode: OutputMode::Clipboard,
+        unload_idle_mins: 15,
     };
     let engine = EngineStatusPayload {
         model: Some(ModelId::Tiny),
@@ -177,6 +178,10 @@ fn current_contracts() -> Value {
         "engineStatus": serde_json::to_value(&engine).unwrap(),
         "engineStatusFallback": serde_json::to_value(&engine_fallback).unwrap(),
         "engineStatusNpuToGpu": serde_json::to_value(&engine_npu_to_gpu).unwrap(),
+        "engineStatusReleased": serde_json::to_value(EngineStatusPayload {
+            status: ModelStatus::Released,
+            ..engine.clone()
+        }).unwrap(),
         "appConfig": serde_json::to_value(&config).unwrap(),
         "modelsGgml": serde_json::to_value(ggml.overview(Some(ModelId::Tiny), "/models/ggml".into())).unwrap(),
         "modelsOnnx": serde_json::to_value(onnx.overview(Some(ModelId::Tiny), "/models/onnx".into())).unwrap(),

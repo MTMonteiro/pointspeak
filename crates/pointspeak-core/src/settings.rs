@@ -48,7 +48,7 @@ pub struct ProviderProbe {
     pub backend: Backend,
     /// Nome do dispositivo, quando a API do ONNX Runtime informa.
     pub device: Option<String>,
-    /// Só no DirectML: a EP registrou com `DeviceFilter::Npu` (há uma NPU DirectX 12).
+    /// DirectML e OpenVINO: a EP registrou na NPU (`DeviceFilter::Npu` / `device_type` `NPU`).
     pub npu: bool,
 }
 
@@ -184,7 +184,9 @@ fn onnx_provider(
         OnnxRuntimeStatus::Loaded { providers } => providers,
     };
     match providers.iter().find(|p| p.backend == backend) {
-        Some(p) if backend == Backend::Directml => Ok(Some(directml_detail(p))),
+        Some(p) if matches!(backend, Backend::Directml | Backend::Openvino) => {
+            Ok(Some(directml_detail(p)))
+        }
         Some(p) => Ok(p.device.clone()),
         None => Err(match backend {
             Backend::Directml => REASON_NO_DIRECTML,
@@ -194,8 +196,8 @@ fn onnx_provider(
     }
 }
 
-/// `detail` do cartão DirectML: se há NPU (a engine tenta ela primeiro) e o fabricante, quando o
-/// ONNX Runtime informa.
+/// `detail` dos cartões DirectML e OpenVINO: se há NPU (a engine tenta ela primeiro) e o fabricante,
+/// quando o ONNX Runtime informa.
 fn directml_detail(probe: &ProviderProbe) -> String {
     let head = if probe.npu {
         DIRECTML_NPU_DETAIL
@@ -462,6 +464,24 @@ mod tests {
     }
 
     #[test]
+    fn openvino_card_says_whether_there_is_an_npu() {
+        let probe = HardwareProbe {
+            onnx: OnnxRuntimeStatus::Loaded {
+                providers: vec![ProviderProbe {
+                    backend: Backend::Openvino,
+                    device: Some("Intel".into()),
+                    npu: true,
+                }],
+            },
+            vulkan: VulkanStatus::NotIncluded,
+        };
+        let options = backend_options(TargetOs::Windows, &probe);
+        assert_eq!(options[1].backend, Backend::Openvino);
+        assert!(options[1].available);
+        assert_eq!(options[1].detail.as_deref(), Some("NPU detectada · Intel"));
+    }
+
+    #[test]
     fn linux_runtime_cpu_only_and_with_providers() {
         // Release oficial onnxruntime-linux-x64: só CPU.
         assert_eq!(
@@ -485,7 +505,8 @@ mod tests {
         );
         assert_eq!(options[0].reason.as_deref(), Some(REASON_WINDOWS_ONLY));
         assert!(options[1].available && options[3].available);
-        assert_eq!(options[1].detail.as_deref(), Some("Intel"));
+        // OpenVINO diz se há NPU, como o DirectML.
+        assert_eq!(options[1].detail.as_deref(), Some("Sem NPU · GPU · Intel"));
         // Sem nome do dispositivo: `detail` omitido.
         assert_eq!(options[3].detail, None);
     }
@@ -577,7 +598,7 @@ mod tests {
         );
         assert_eq!(
             serde_json::to_value(&detected[1]).unwrap(),
-            json!({ "backend": "openvino", "available": true, "detail": "Intel" })
+            json!({ "backend": "openvino", "available": true, "detail": "Sem NPU · GPU · Intel" })
         );
     }
 

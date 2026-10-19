@@ -13,7 +13,8 @@ Versão atual: **1.0.0**.
 
 - **Windows:** Windows 10 ou 11, 64 bits (x64), com processador com **AVX2** (Intel Haswell de 2013 em diante,
   AMD Excavator/Ryzen). O WebView2 vem com o Windows atualizado; se faltar, o instalador instala.
-  Para a aceleração por GPU/NPU (DirectML): placa ou NPU com DirectX 12. Sem isso, o ditado roda na CPU.
+  Para a aceleração por GPU/NPU (DirectML): placa ou NPU com DirectX 12. NPU Intel (Core Ultra) que o
+  DirectML não encontra roda pelo cartão `OpenVINO (Intel)`. Sem nada disso, o ditado roda na CPU.
 - **Linux:** x64 com AVX2, sessão **X11** ou **Wayland**, bandeja do sistema (no GNOME, a extensão
   AppIndicator). No Wayland, a colagem precisa do `wtype` ou do `ydotool` (com o serviço `ydotoold` rodando).
   O .deb foi feito para Ubuntu 24.04 / Debian e derivados; o AppImage roda em distribuições com glibc igual ou
@@ -101,10 +102,21 @@ a transcrição roda (Automático, NPU/GPU via DirectML no Windows, ou CPU). Pel
   Testar transcrição** e veja o dispositivo no diagnóstico. Ao carregar o modelo no DirectML, o PointSpeak
   compara a NPU e a GPU com a CPU e troca de dispositivo se o resultado divergir; se ainda assim o texto
   sair errado, escolha `CPU` em **Hardware**. O cartão `NPU (DirectML)` diz se o Windows encontrou uma NPU (`NPU detectada`).
+- **Tenho NPU Intel, mas o cartão `NPU (DirectML)` diz `Sem NPU`:** em alguns Core Ultra o DirectML não enxerga a
+  NPU. Escolha `OpenVINO (Intel)` em **Hardware** (ele mostra `NPU detectada · Intel`): o modelo roda na NPU e na
+  GPU juntas. **Na primeira vez com cada modelo**, o OpenVINO compila o modelo para a NPU: o app fica em
+  `Carregando modelo…` por vários minutos (cerca de 17 min no `large-v3-turbo`). Depois isso fica guardado na pasta
+  do modelo (cerca de 1,4 GB no `large-v3-turbo`) e a carga leva segundos.
 - **`Microfone indisponível`:** confira o microfone em **Configurações → Microfone** (**Testar microfone**)
   e nas permissões de microfone do sistema.
 - **`Nada foi ouvido`:** a gravação ficou sem fala (ou foi curta demais). Fale mais perto do microfone ou
   segure o atalho por mais tempo.
+- **O PointSpeak ocupa muita memória parado:** o modelo fica carregado para o ditado começar na hora (de
+  ~300 MB no `tiny`/`base` na CPU a ~4 GB no `large-v3-turbo` na NPU/GPU). Em **Hardware → Liberar a memória do
+  modelo**, escolha depois de quantos minutos sem uso ele sai da memória; ao apertar o atalho de novo ele
+  carrega enquanto você fala (alguns segundos no `large-v3-turbo`).
+- **Atalho com dois toques (Alt+Alt):** em **Atalho → Alterar**, toque duas vezes rápido em `Alt`, `Ctrl` ou
+  `Shift`. No modo **Segurar para falar**, segure o segundo toque enquanto fala. Só no Windows.
 - **O atalho não faz nada:** veja se o ditado está pausado (menu da bandeja) ou se outro app já usa a mesma
   combinação; troque em **Configurações → Atalho**.
 

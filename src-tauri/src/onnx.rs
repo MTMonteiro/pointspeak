@@ -8,9 +8,9 @@
 //! A detecção ([`hardware`]) roda uma vez e fica em cache: o `setup` a dispara numa thread
 //! ([`detect_in_background`]); quem pede antes de ela terminar espera o mesmo resultado. Para cada
 //! EP (DirectML, OpenVINO, CUDA) ela confere se o runtime a traz (`is_available`) e se registra
-//! numa sessão de teste (sem modelo: o DirectML cria o dispositivo DirectX 12 aqui). O DirectML é
-//! testado com os dois filtros (NPU e GPU): disponível se um deles registra, e o cartão diz se há
-//! NPU. O `Environment`
+//! numa sessão de teste (sem modelo: o DirectML cria o dispositivo DirectX 12 aqui). DirectML e
+//! OpenVINO são testados nos dois dispositivos (NPU e GPU): disponíveis se um deles registra, e o
+//! cartão diz se há NPU. O `Environment`
 //! criado fica guardado ([`environment`]): o `ort` só aceita um por processo, e o Silero VAD
 //! (`vad.rs`) e a engine Whisper ONNX (`onnx_whisper.rs`) criam as sessões nesse mesmo.
 
@@ -22,7 +22,7 @@ use std::thread;
 use ort::ep::{self, ExecutionProvider};
 use ort::session::Session;
 use pointspeak_core::config::Backend;
-use pointspeak_core::engine::DmlDevice;
+use pointspeak_core::engine::{backend_label, DmlDevice};
 use pointspeak_core::onnx_runtime::{find_library, library_candidates, ORT_DYLIB_ENV};
 use pointspeak_core::settings::{
     HardwareProbe, OnnxRuntimeStatus, ProviderProbe, TargetOs, VulkanStatus,
@@ -31,6 +31,12 @@ use tauri::{AppHandle, Manager, Runtime};
 
 static PROBE: OnceLock<HardwareProbe> = OnceLock::new();
 static ENVIRONMENT: OnceLock<ort::environment::Environment> = OnceLock::new();
+static LIBRARY: OnceLock<PathBuf> = OnceLock::new();
+
+/// Biblioteca do ONNX Runtime carregada (depois da detecção).
+pub fn library() -> Option<&'static Path> {
+    LIBRARY.get().map(PathBuf::as_path)
+}
 
 /// Resultado da detecção (roda na primeira chamada; as outras esperam ou reaproveitam).
 pub fn hardware<R: Runtime>(app: &AppHandle<R>) -> &'static HardwareProbe {
@@ -91,10 +97,19 @@ fn detect_onnx(resource_dir: Option<&Path>) -> OnnxRuntimeStatus {
         Err(e) => return load_failed(&library, &e),
     };
     log::info!("ONNX Runtime carregado de {}", library.display());
+    let _ = LIBRARY.set(library.clone());
     let environment = ENVIRONMENT.get_or_init(|| environment);
     let providers = [
-        probe_directml(environment),
-        probe_provider(environment, Backend::Openvino, ep::OpenVINO::default()),
+        probe_devices(
+            environment,
+            Backend::Directml,
+            crate::onnx_whisper::directml,
+        ),
+        probe_devices(
+            environment,
+            Backend::Openvino,
+            crate::onnx_whisper::openvino,
+        ),
         probe_provider(environment, Backend::Cuda, ep::CUDA::default()),
     ];
     OnnxRuntimeStatus::Loaded {
@@ -150,35 +165,42 @@ fn probe_provider<E: ExecutionProvider>(
     })
 }
 
-/// DirectML com os dois filtros do app (`onnx_whisper::directml`): disponível se a NPU ou a GPU
-/// registra; `npu` diz se a NPU registrou.
-fn probe_directml(environment: &ort::environment::Environment) -> Option<ProviderProbe> {
-    type Dml = ep::DirectML;
-    if !provider_available::<Dml>() {
+/// DirectML ou OpenVINO com os dois dispositivos do app (`onnx_whisper::directml`/`openvino`):
+/// disponível se a NPU ou a GPU registra; `npu` diz se a NPU registrou.
+fn probe_devices<E: ExecutionProvider>(
+    environment: &ort::environment::Environment,
+    backend: Backend,
+    provider: fn(DmlDevice) -> E,
+) -> Option<ProviderProbe> {
+    // A EP OpenVINO do Windows é uma biblioteca à parte (`onnxruntime_providers_openvino.dll`), que
+    // o `is_available` (a lista de EPs compiladas no núcleo) não mostra: lá só o registro diz.
+    let shared_library = cfg!(windows) && backend == Backend::Openvino;
+    if !shared_library && !provider_available::<E>() {
         return None;
     }
     let mut npu = false;
     let mut any = false;
     for device in DmlDevice::ORDER {
-        match register_test(environment, &crate::onnx_whisper::directml(device)) {
+        match register_test(environment, &provider(device)) {
             Ok(()) => {
                 npu |= device == DmlDevice::Npu;
                 any = true;
             }
             Err(e) => eprintln!(
                 "[pointspeak] {} ({}) não iniciou: {e}",
-                Dml::NAME,
+                E::NAME,
                 device.label()
             ),
         }
     }
     log::info!(
-        "DirectML: NPU {}",
+        "{}: NPU {}",
+        backend_label(backend),
         if npu { "detectada" } else { "ausente" }
     );
     any.then(|| ProviderProbe {
-        backend: Backend::Directml,
-        device: vendor::<Dml>(environment),
+        backend,
+        device: vendor::<E>(environment),
         npu,
     })
 }

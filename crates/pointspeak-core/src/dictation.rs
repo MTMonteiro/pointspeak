@@ -66,6 +66,9 @@ pub enum ModelStatus {
     Loaded,
     /// O carregamento falhou (arquivo ausente ou corrompido).
     Failed,
+    /// O modelo saiu da memória depois de um tempo sem uso (`unloadIdleMins`); o próximo ditado
+    /// carrega de novo. Para a bandeja é "pronto".
+    Released,
 }
 
 /// Linha de estado da bandeja (primeiro item do menu e tooltip, DESIGN.md §5).
@@ -189,7 +192,9 @@ impl Dictation {
             _ => match self.model {
                 ModelStatus::Loading => TrayStatus::LoadingModel,
                 ModelStatus::NotSelected | ModelStatus::Failed => TrayStatus::NoModel,
-                ModelStatus::Loaded => TrayStatus::Ready(self.hotkey_label.clone()),
+                ModelStatus::Loaded | ModelStatus::Released => {
+                    TrayStatus::Ready(self.hotkey_label.clone())
+                }
             },
         }
     }
@@ -739,6 +744,8 @@ mod tests {
                 "Ctrl+Shift+Space".into()
             ))]
         );
+        // Modelo liberado da memória continua "pronto" na bandeja (o ditado recarrega).
+        assert_eq!(d.handle(Input::Model(ModelStatus::Released)), []);
         assert_eq!(
             d.handle(Input::Model(ModelStatus::Failed)),
             [Effect::UpdateTray(TrayStatus::NoModel)]

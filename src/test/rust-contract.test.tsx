@@ -61,13 +61,14 @@ function isAppConfig(value: unknown): value is AppConfig {
     && typeof value.silenceTimeoutMs === "number"
     && isOneOf(value.backend, BACKENDS)
     && typeof value.maxRecordingSecs === "number"
-    && isOneOf(value.outputMode, ["paste", "clipboard"]);
+    && isOneOf(value.outputMode, ["paste", "clipboard"])
+    && typeof value.unloadIdleMins === "number";
 }
 
 function isEngineStatus(value: unknown): value is EngineStatus {
   return isRecord(value)
     && (value.model === null || isOneOf(value.model, MODEL_IDS))
-    && isOneOf(value.status, ["notSelected", "loading", "loaded", "failed"])
+    && isOneOf(value.status, ["notSelected", "loading", "loaded", "failed", "released"])
     && isOneOf(value.backend, BACKENDS)
     && typeof value.paused === "boolean"
     && (value.fallbackReason === undefined || typeof value.fallbackReason === "string")
@@ -157,6 +158,7 @@ function readContracts() {
     engineStatus: checked(rawFixtures.engineStatus, isEngineStatus, "engineStatus"),
     engineStatusFallback: checked(rawFixtures.engineStatusFallback, isEngineStatus, "engineStatusFallback"),
     engineStatusNpuToGpu: checked(rawFixtures.engineStatusNpuToGpu, isEngineStatus, "engineStatusNpuToGpu"),
+    engineStatusReleased: checked(rawFixtures.engineStatusReleased, isEngineStatus, "engineStatusReleased"),
     modelsGgml: checked(rawFixtures.modelsGgml, isModelsOverview, "modelsGgml"),
     modelsOnnx: checked(rawFixtures.modelsOnnx, isModelsOverview, "modelsOnnx"),
     modelProgress: checked(rawFixtures.modelProgress, isModelProgress, "modelProgress"),

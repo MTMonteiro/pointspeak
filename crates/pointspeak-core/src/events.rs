@@ -315,6 +315,7 @@ mod tests {
         for (status, name) in [
             (ModelStatus::Loading, "loading"),
             (ModelStatus::Failed, "failed"),
+            (ModelStatus::Released, "released"),
         ] {
             assert_eq!(serde_json::to_value(status).unwrap(), name);
         }

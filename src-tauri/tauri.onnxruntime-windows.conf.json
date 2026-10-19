@@ -4,8 +4,18 @@
     "resources": {
       "../target/onnxruntime/windows-x64/onnxruntime.dll": "onnxruntime.dll",
       "../target/onnxruntime/windows-x64/DirectML.dll": "DirectML.dll",
+      "../target/onnxruntime/windows-x64/onnxruntime_providers_openvino.dll": "onnxruntime_providers_openvino.dll",
+      "../target/onnxruntime/windows-x64/onnxruntime_providers_shared.dll": "onnxruntime_providers_shared.dll",
+      "../target/onnxruntime/windows-x64/openvino.dll": "openvino.dll",
+      "../target/onnxruntime/windows-x64/openvino_intel_npu_plugin.dll": "openvino_intel_npu_plugin.dll",
+      "../target/onnxruntime/windows-x64/openvino_intel_gpu_plugin.dll": "openvino_intel_gpu_plugin.dll",
+      "../target/onnxruntime/windows-x64/openvino_onnx_frontend.dll": "openvino_onnx_frontend.dll",
+      "../target/onnxruntime/windows-x64/tbb12.dll": "tbb12.dll",
+      "../target/onnxruntime/windows-x64/tbbmalloc.dll": "tbbmalloc.dll",
       "../target/onnxruntime/windows-x64/onnxruntime-LICENSE.txt": "licenses/onnxruntime-LICENSE.txt",
-      "../target/onnxruntime/windows-x64/DirectML-LICENSE.txt": "licenses/DirectML-LICENSE.txt"
+      "../target/onnxruntime/windows-x64/DirectML-LICENSE.txt": "licenses/DirectML-LICENSE.txt",
+      "../target/onnxruntime/windows-x64/openvino-ep-LICENSE.txt": "licenses/openvino-ep-LICENSE.txt",
+      "../target/onnxruntime/windows-x64/openvino-ThirdPartyNotices.txt": "licenses/openvino-ThirdPartyNotices.txt"
     }
   }
 }

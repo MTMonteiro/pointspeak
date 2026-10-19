@@ -60,6 +60,25 @@ fn linux_overlay_ships_cpu_only() {
 }
 
 #[test]
+fn windows_overlay_ships_the_openvino_ep_next_to_the_runtime() {
+    // A EP OpenVINO (NPU Intel) é carregada pelo onnxruntime.dll da mesma pasta: tudo na raiz.
+    let targets = resource_targets(&tauri_config("tauri.onnxruntime-windows.conf.json"));
+    for dll in [
+        "onnxruntime_providers_openvino.dll",
+        "onnxruntime_providers_shared.dll",
+        "openvino.dll",
+        "openvino_intel_npu_plugin.dll",
+        "openvino_onnx_frontend.dll",
+        "tbb12.dll",
+    ] {
+        assert!(targets.iter().any(|t| t == dll), "{dll} fora da raiz");
+    }
+    assert!(targets
+        .iter()
+        .any(|t| t == "licenses/openvino-ep-LICENSE.txt"));
+}
+
+#[test]
 fn base_config_ships_the_silero_model() {
     let targets = resource_targets(&tauri_config("tauri.conf.json"));
     assert!(targets.iter().any(|t| t == SILERO_MODEL_RESOURCE));

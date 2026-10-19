@@ -332,6 +332,34 @@ pub fn reload_model(app: &AppHandle) {
     }
 }
 
+/// De quanto em quanto tempo a thread de [`spawn_idle_release`] confere o uso do modelo.
+const IDLE_CHECK: std::time::Duration = std::time::Duration::from_secs(20);
+
+/// Thread que tira o modelo da memória depois de `unloadIdleMins` sem ditado (0 = nunca; lido do
+/// config a cada volta, então trocar nas Configurações vale na hora). O motor passa a
+/// [`ModelStatus::Released`] e o próximo atalho carrega de novo (`transcriber::preload`).
+pub fn spawn_idle_release(app: &AppHandle) {
+    let app = app.clone();
+    let spawned = thread::Builder::new()
+        .name("pointspeak-idle-release".into())
+        .spawn(move || loop {
+            thread::sleep(IDLE_CHECK);
+            let minutes = current_config(&app).unload_idle_mins;
+            if minutes == 0 {
+                continue;
+            }
+            let idle = std::time::Duration::from_secs(u64::from(minutes) * 60);
+            if transcriber::release_if_idle(&app, idle) {
+                eprintln!("[pointspeak] modelo liberado da memória após {minutes} min sem uso");
+                app.state::<DictationHandle>()
+                    .send(Input::Model(ModelStatus::Released));
+            }
+        });
+    if let Err(e) = spawned {
+        eprintln!("[pointspeak] liberação de memória por inatividade: thread não iniciou ({e})");
+    }
+}
+
 /// Roda `work` numa thread `name` e manda a resposta pelo `inbox`. Se a thread não abrir ou `work`
 /// entrar em pânico, manda `failed`: o ditado nunca fica preso em "Transcrevendo…" esperando.
 fn spawn_reply(
@@ -399,6 +427,8 @@ impl Backend for TauriBackend {
         ) {
             Ok(handle) => {
                 self.recording = Some(handle);
+                // Modelo fora da memória (liberado sem uso): carrega enquanto a pessoa fala.
+                transcriber::preload(&self.app, config.clone());
                 true
             }
             Err(e) => {

@@ -12,6 +12,10 @@
 //! a GPU (encoder e decoder sempre no mesmo dispositivo); só se os dois falham entra o fallback para
 //! a CPU. A NPU que falha com a GPU assumindo fica em [`DeviceFallback`] (aviso informativo).
 //!
+//! No OpenVINO a mesma ordem vale só para o encoder (`device_type` `NPU`, depois `GPU`); o decoder
+//! fica sempre na CPU EP: na NPU Intel (Core Ultra X7 358H) ele derruba o processo no 1º passo e na
+//! GPU recompila a cada tamanho novo de entrada.
+//!
 //! O `src-tauri` só entrega o que o disco e a detecção informam ([`EnginePlan`]) e os dois
 //! carregadores; a decisão e os textos ficam aqui.
 
@@ -98,7 +102,8 @@ pub fn summarize_error(error: &str) -> String {
     format!("{}…", cut.trim_end())
 }
 
-/// Dispositivo do DirectML (`DeviceFilter` do `ort`) em que a engine ONNX abriu as sessões.
+/// Dispositivo em que a engine ONNX abriu as sessões: no DirectML (`DeviceFilter` do `ort`) o
+/// encoder e o decoder, no OpenVINO (`device_type`) só o encoder.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum DmlDevice {
@@ -123,21 +128,23 @@ impl DmlDevice {
     }
 }
 
-/// Dispositivos que a engine ONNX tenta para `backend`, na ordem. Só o DirectML escolhe dispositivo;
-/// as outras EPs abrem uma vez (`None`).
+/// Dispositivos que a engine ONNX tenta para `backend`, na ordem. DirectML e OpenVINO escolhem
+/// dispositivo (NPU, depois GPU); as outras EPs abrem uma vez (`None`).
 pub fn onnx_devices(backend: Backend) -> &'static [Option<DmlDevice>] {
-    const DIRECTML: [Option<DmlDevice>; 2] = [Some(DmlDevice::Npu), Some(DmlDevice::Gpu)];
+    const NPU_THEN_GPU: [Option<DmlDevice>; 2] = [Some(DmlDevice::Npu), Some(DmlDevice::Gpu)];
     match backend {
-        Backend::Directml => &DIRECTML,
+        Backend::Directml | Backend::Openvino => &NPU_THEN_GPU,
         _ => &[None],
     }
 }
 
 /// Se a engine ONNX no `backend` passa pela verificação de sanidade na carga
-/// (`whisper_onnx::sanity`): só o DirectML (NPU e GPU), onde um dispositivo pode abrir o modelo e
-/// calcular errado. A CPU é a própria referência; OpenVINO e CUDA não mudam.
+/// (`whisper_onnx::sanity`): DirectML e OpenVINO (NPU e GPU), onde um dispositivo pode abrir o
+/// modelo e calcular errado. No OpenVINO ela também tira do 1º ditado a compilação para a NPU (que
+/// só acontece na primeira inferência: ~17 min no large-v3-turbo sem o cache em disco). A CPU é a
+/// própria referência; CUDA não muda.
 pub fn sanity_checked(backend: Backend) -> bool {
-    backend == Backend::Directml
+    matches!(backend, Backend::Directml | Backend::Openvino)
 }
 
 /// Backend e dispositivo nos textos: `DirectML · NPU`, `DirectML · GPU` ou só o backend.
@@ -781,11 +788,17 @@ mod tests {
                     backend,
                     kind: EngineKind::Onnx,
                     fallback: None,
-                    device: None,
+                    // OpenVINO: o encoder abre na NPU, a primeira da ordem.
+                    device: onnx_devices(backend)[0],
                     device_fallback: None,
                 }
             );
-            assert_eq!(calls.take(), [("onnx", backend)]);
+            let name = if backend == Backend::Openvino {
+                "npu"
+            } else {
+                "onnx"
+            };
+            assert_eq!(calls.take(), [(name, backend)]);
         }
     }
 
@@ -796,7 +809,11 @@ mod tests {
             onnx_devices(Backend::Directml),
             [Some(DmlDevice::Npu), Some(DmlDevice::Gpu)]
         );
-        for backend in [Backend::Openvino, Backend::Cuda, Backend::Cpu] {
+        assert_eq!(
+            onnx_devices(Backend::Openvino),
+            [Some(DmlDevice::Npu), Some(DmlDevice::Gpu)]
+        );
+        for backend in [Backend::Cuda, Backend::Cpu] {
             assert_eq!(onnx_devices(backend), [None], "{backend:?}");
         }
         let calls = Calls::default();
@@ -970,7 +987,14 @@ mod tests {
             let loaded = load_with_fallback(
                 &plan(backend, true, false),
                 &onnx_dir(),
-                calls.onnx_seq(vec![Err(error), Ok("onnx-cpu")]),
+                // Cada dispositivo do backend falha (OpenVINO: NPU e GPU), depois a CPU EP abre.
+                calls.onnx_seq(
+                    onnx_devices(backend)
+                        .iter()
+                        .map(|_| Err(error.clone()))
+                        .chain([Ok("onnx-cpu")])
+                        .collect(),
+                ),
                 calls.ggml(Ok("ggml")),
             )
             .unwrap();
@@ -978,7 +1002,14 @@ mod tests {
             assert_eq!(loaded.runtime.backend, Backend::Cpu);
             assert_eq!(loaded.runtime.kind, EngineKind::Onnx);
             assert_eq!(loaded.runtime.fallback, Some(reason));
-            assert_eq!(calls.take(), [("onnx", backend), ("onnx", Backend::Cpu)]);
+            let expected: Vec<_> = match backend {
+                Backend::Openvino => vec![("npu", backend), ("gpu", backend)],
+                _ => vec![("onnx", backend)],
+            };
+            assert_eq!(
+                calls.take(),
+                [expected, vec![("onnx", Backend::Cpu)]].concat()
+            );
         }
     }
 
@@ -1016,11 +1047,11 @@ mod tests {
     }
 
     #[test]
-    fn only_directml_runs_the_sanity_check() {
+    fn only_directml_and_openvino_run_the_sanity_check() {
         for backend in ALL {
             assert_eq!(
                 sanity_checked(backend),
-                backend == Backend::Directml,
+                matches!(backend, Backend::Directml | Backend::Openvino),
                 "{backend:?}"
             );
         }

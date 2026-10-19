@@ -13,6 +13,7 @@ const CONFIG = {
   silenceTimeoutMs: 2500,
   backend: "auto",
   maxRecordingSecs: 300,
+  unloadIdleMins: 0,
   outputMode: "paste",
 };
 const ENGINE = { model: "base", status: "loaded", backend: "cpu", paused: false };

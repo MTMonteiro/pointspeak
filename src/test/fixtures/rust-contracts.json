@@ -9,7 +9,8 @@
     "microphone": "USB Microphone",
     "model": "tiny",
     "outputMode": "clipboard",
-    "silenceTimeoutMs": 2500
+    "silenceTimeoutMs": 2500,
+    "unloadIdleMins": 15
   },
   "audioLevel": {
     "level": 0.625
@@ -61,6 +62,12 @@
     "model": "tiny",
     "paused": false,
     "status": "loaded"
+  },
+  "engineStatusReleased": {
+    "backend": "cpu",
+    "model": "tiny",
+    "paused": false,
+    "status": "released"
   },
   "modelFailedProgress": {
     "done": 0,
@@ -129,49 +136,49 @@
     "models": [
       {
         "description": "Mais rápido, menos preciso",
-        "displaySize": "75 MB",
+        "displaySize": "128 MB",
         "fileName": "onnx-tiny",
         "id": "tiny",
         "recommended": false,
         "sha256": "",
-        "sizeBytes": 77184276,
+        "sizeBytes": 134146253,
         "state": "active"
       },
       {
         "description": "Equilíbrio, recomendado",
-        "displaySize": "142 MB",
+        "displaySize": "234 MB",
         "done": 44385440,
         "fileName": "onnx-base",
         "id": "base",
         "recommended": true,
         "sha256": "",
-        "sizeBytes": 147131618,
+        "sizeBytes": 245166827,
         "state": "downloading",
         "total": 147951465
       },
       {
         "description": "Mais preciso, mais lento",
-        "displaySize": "466 MB",
+        "displaySize": "731 MB",
         "fileName": "onnx-small",
         "id": "small",
         "recommended": false,
         "sha256": "",
-        "sizeBytes": 486262020,
+        "sizeBytes": 765740183,
         "state": "notDownloaded"
       },
       {
         "description": "O mais preciso; pede GPU/NPU",
-        "displaySize": "1,6 GB",
+        "displaySize": "1,9 GB",
         "fileName": "onnx-large-v3-turbo",
         "id": "large-v3-turbo",
         "reason": "Download falhou: conexão perdida",
         "recommended": false,
         "sha256": "",
-        "sizeBytes": 1619641148,
+        "sizeBytes": 1937412905,
         "state": "failed"
       }
     ],
-    "usedBytes": 77184276
+    "usedBytes": 134146253
   },
   "stateChanged": {
     "anchor": "end",
