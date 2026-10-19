@@ -1,11 +1,12 @@
-//! Escolha da engine de transcrição pelo backend efetivo e o fallback para o whisper.cpp na CPU.
+//! Escolha da engine de transcrição pelo backend efetivo e o fallback para a CPU.
 //!
 //! O backend efetivo (`settings::effective_backend`) decide a engine ([`engine_kind`]): CPU (e
 //! Vulkan/CUDA quando o whisper.cpp foi compilado com essas features) usa o whisper.cpp com o
 //! modelo ggml; DirectML, OpenVINO e CUDA sem a feature usam o ONNX Runtime com a variante ONNX.
-//! [`load_with_fallback`] carrega a engine e, se a variante ONNX não foi baixada, a EP não inicia
-//! ou o ONNX Runtime não abre o modelo, cai para o whisper.cpp na CPU (se o ggml existe), guardando
-//! o motivo ([`FallbackReason`]) que o `engine://status` mostra em `fallbackReason`.
+//! [`load_with_fallback`] carrega a engine e, se a variante ONNX não foi baixada, a EP não inicia,
+//! o ONNX Runtime não abre o modelo ou o dispositivo reprova na verificação, cai para a CPU: o
+//! whisper.cpp se o ggml existe, senão a própria engine ONNX na CPU EP. O motivo
+//! ([`FallbackReason`]) vai para o `engine://status` em `fallbackReason`.
 //!
 //! No DirectML a engine tenta os dispositivos na ordem de [`DmlDevice::ORDER`]: NPU primeiro, depois
 //! a GPU (encoder e decoder sempre no mesmo dispositivo); só se os dois falham entra o fallback para
@@ -344,16 +345,18 @@ pub struct Loaded<E> {
     pub runtime: EngineRuntime,
 }
 
-/// Carrega a engine do plano, caindo para o whisper.cpp na CPU quando a ONNX não dá.
+/// Carrega a engine do plano, caindo para a CPU quando a ONNX acelerada não dá.
 ///
 /// - Engine whisper.cpp: `load_ggml(backend)` (o arquivo ausente vira `ModelNotFound` lá dentro).
 /// - Engine ONNX: variante ausente → [`FallbackReason::OnnxNotDownloaded`] sem chamar
 ///   `load_onnx`; senão `load_onnx(backend, device)` para cada dispositivo de [`onnx_devices`]
 ///   (DirectML: NPU e depois GPU; o primeiro que abre fica, com a falha anterior em
 ///   [`DeviceFallback`]). Se todos falham, o erro do último vira [`FallbackReason::ProviderFailed`]
-///   / [`FallbackReason::ModelLoadFailed`]. Com o motivo, `load_ggml(Cpu)` se o ggml está no
-///   disco; sem ele, o erro é o de modelo ausente (`ModelNotFound` da pasta ONNX, via `onnx_path`)
-///   ou o da carga ONNX (`Load`).
+///   / [`FallbackReason::ModelLoadFailed`] / [`FallbackReason::Diverged`].
+/// - Com o motivo, o fallback é: `load_ggml(Cpu)` (whisper.cpp) se o ggml está no disco; senão,
+///   com a variante ONNX no disco, `load_onnx(Cpu, None)` (a própria engine ONNX na CPU EP). Se
+///   nada carrega, o erro é o de modelo ausente (`ModelNotFound` da pasta ONNX, via `onnx_path`)
+///   ou `Load` com o motivo do backend acelerado (não o erro da CPU).
 pub fn load_with_fallback<E>(
     plan: &EnginePlan,
     onnx_path: &Path,
@@ -405,12 +408,26 @@ pub fn load_with_fallback<E>(
         }
     };
     if !plan.ggml_ready {
-        return Err(match reason {
-            FallbackReason::OnnxNotDownloaded { .. } => {
-                TranscribeError::ModelNotFound(onnx_path.to_path_buf())
+        if matches!(reason, FallbackReason::OnnxNotDownloaded { .. }) {
+            return Err(TranscribeError::ModelNotFound(onnx_path.to_path_buf()));
+        }
+        // A variante ONNX está no disco: a CPU EP roda o mesmo modelo (é a referência da
+        // verificação de sanidade). Se ela também falha, vale o motivo do backend acelerado.
+        if plan.backend != Backend::Cpu {
+            if let Ok(engine) = load_onnx(Backend::Cpu, None) {
+                return Ok(Loaded {
+                    engine,
+                    runtime: EngineRuntime {
+                        backend: Backend::Cpu,
+                        kind: EngineKind::Onnx,
+                        fallback: Some(reason),
+                        device: None,
+                        device_fallback: None,
+                    },
+                });
             }
-            other => TranscribeError::Load(other.message()),
-        });
+        }
+        return Err(TranscribeError::Load(reason.message()));
     }
     let engine = load_ggml(Backend::Cpu)?;
     Ok(Loaded {
@@ -872,12 +889,111 @@ mod tests {
             loaded.runtime.summary(),
             "whisper.cpp em CPU (fallback: DirectML reprovou na verificação: resultado diverge da CPU)"
         );
-        // Sem o ggml no disco, o motivo vira o erro de carga.
+        // Com o ggml no disco, o whisper.cpp continua o preferido: a CPU EP nem é tentada.
+        assert_eq!(
+            calls.take(),
+            [
+                ("npu", Backend::Directml),
+                ("gpu", Backend::Directml),
+                ("ggml", Backend::Cpu)
+            ]
+        );
+    }
+
+    #[test]
+    fn without_ggml_directml_diverging_falls_back_to_onnx_on_the_cpu() {
+        // O bug do #829: só a variante ONNX no disco e o DirectML reprovando na NPU e na GPU.
         let calls = Calls::default();
+        let diverged = || {
+            OnnxLoadError::Diverged(
+                "resultado diverge da CPU (correlação 0.00, mínimo 0.95)".into(),
+            )
+        };
+        let loaded = load_with_fallback(
+            &plan(Backend::Directml, true, false),
+            &onnx_dir(),
+            calls.onnx_seq(vec![Err(diverged()), Err(diverged()), Ok("onnx-cpu")]),
+            calls.ggml(Ok("ggml")),
+        )
+        .unwrap();
+        assert_eq!(loaded.engine, "onnx-cpu");
+        assert_eq!(
+            loaded.runtime,
+            EngineRuntime {
+                backend: Backend::Cpu,
+                kind: EngineKind::Onnx,
+                fallback: Some(FallbackReason::Diverged {
+                    backend: Backend::Directml,
+                    error: "resultado diverge da CPU (correlação 0.00, mínimo 0.95)".into()
+                }),
+                device: None,
+                device_fallback: None,
+            }
+        );
+        assert_eq!(
+            loaded.runtime.summary(),
+            "ONNX Runtime em CPU (fallback: DirectML reprovou na verificação: resultado diverge \
+             da CPU (correlação 0.00, mínimo 0.95))"
+        );
+        // A CPU EP abre sem dispositivo; o ggml (ausente) não é chamado.
+        assert_eq!(
+            calls.take(),
+            [
+                ("npu", Backend::Directml),
+                ("gpu", Backend::Directml),
+                ("onnx", Backend::Cpu)
+            ]
+        );
+    }
+
+    #[test]
+    fn without_ggml_other_onnx_failures_also_fall_back_to_onnx_on_the_cpu() {
+        for (backend, error, reason) in [
+            (
+                Backend::Openvino,
+                OnnxLoadError::Provider("no Intel device".into()),
+                FallbackReason::ProviderFailed {
+                    backend: Backend::Openvino,
+                    error: "no Intel device".into(),
+                },
+            ),
+            (
+                Backend::Cuda,
+                OnnxLoadError::Model("op sem suporte".into()),
+                FallbackReason::ModelLoadFailed {
+                    backend: Backend::Cuda,
+                    error: "op sem suporte".into(),
+                },
+            ),
+        ] {
+            let calls = Calls::default();
+            let loaded = load_with_fallback(
+                &plan(backend, true, false),
+                &onnx_dir(),
+                calls.onnx_seq(vec![Err(error), Ok("onnx-cpu")]),
+                calls.ggml(Ok("ggml")),
+            )
+            .unwrap();
+            assert_eq!(loaded.engine, "onnx-cpu");
+            assert_eq!(loaded.runtime.backend, Backend::Cpu);
+            assert_eq!(loaded.runtime.kind, EngineKind::Onnx);
+            assert_eq!(loaded.runtime.fallback, Some(reason));
+            assert_eq!(calls.take(), [("onnx", backend), ("onnx", Backend::Cpu)]);
+        }
+    }
+
+    #[test]
+    fn onnx_failing_on_the_cpu_too_keeps_the_directml_reason() {
+        let calls = Calls::default();
+        let diverged = || OnnxLoadError::Diverged("resultado diverge da CPU".into());
         let err = load_with_fallback(
             &plan(Backend::Directml, true, false),
             &onnx_dir(),
-            calls.onnx_seq(vec![Err(diverged()), Err(diverged())]),
+            calls.onnx_seq(vec![
+                Err(diverged()),
+                Err(diverged()),
+                Err(OnnxLoadError::Model("sem memória".into())),
+            ]),
             calls.ggml(Ok("ggml")),
         )
         .err()
@@ -887,6 +1003,15 @@ mod tests {
             TranscribeError::Load(
                 "DirectML reprovou na verificação: resultado diverge da CPU".into()
             )
+        );
+        assert_eq!(err.kind(), ErrorKind::TranscriptionFailed);
+        assert_eq!(
+            calls.take(),
+            [
+                ("npu", Backend::Directml),
+                ("gpu", Backend::Directml),
+                ("onnx", Backend::Cpu)
+            ]
         );
     }
 
@@ -1060,7 +1185,11 @@ mod tests {
             TranscribeError::Load("CUDA não iniciou: CUDA driver too old".into())
         );
         assert_eq!(err.kind(), ErrorKind::TranscriptionFailed);
-        assert_eq!(calls.take(), [("onnx", Backend::Cuda)]);
+        // A CPU EP foi tentada (e falhou): o erro continua o do CUDA.
+        assert_eq!(
+            calls.take(),
+            [("onnx", Backend::Cuda), ("onnx", Backend::Cpu)]
+        );
     }
 
     #[test]

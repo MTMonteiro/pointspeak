@@ -7,8 +7,10 @@
 //!
 //! [`ensure_loaded`] monta o plano do config ([`plan`]: backend efetivo, variantes no disco) e
 //! carrega pela regra do núcleo (`pointspeak_core::engine::load_with_fallback`): se a ONNX não dá
-//! (variante não baixada, EP que não inicia, modelo que não abre), cai para o whisper.cpp na CPU e
-//! guarda o motivo, que o `engine://status` mostra. No DirectML cada dispositivo (NPU, GPU) ainda
+//! (variante não baixada, EP que não inicia, modelo que não abre, dispositivo que reprova), cai para
+//! o whisper.cpp na CPU ou, sem o ggml no disco, para a própria engine ONNX na CPU EP (o closure
+//! ONNX com `Backend::Cpu`: sem DirectML nem verificação de sanidade), e guarda o motivo, que o
+//! `engine://status` mostra. No DirectML cada dispositivo (NPU, GPU) ainda
 //! passa pela verificação de sanidade ([`check_device`]): se calcula diferente da CPU numa entrada
 //! fixa, conta como falha e o próximo dispositivo assume. O [`EngineSlot`] do `AppState` guarda a engine
 //! pela chave modelo + backend efetivo e troca (hot-swap) liberando a antiga antes; o que roda de
