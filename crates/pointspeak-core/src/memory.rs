@@ -14,7 +14,8 @@
 //! |---|---|---|---|
 //! | whisper.cpp (CPU) | 230 MB | 342 MB | 2,0 GB |
 //! | ONNX na CPU EP | 886 MB | 1,5 GB | 7,5 GB |
-//! | OpenVINO (NPU + decoder no DirectML) | 760 MB | 1,2 GB | 7,5 GB |
+//! | OpenVINO compilando (NPU + decoder no DirectML) | 760 MB | 1,2 GB | 7,5 GB (8,6 GB gerando o encoder pré-compilado) |
+//! | OpenVINO com o encoder pré-compilado (EPContext) | — | — | 3,3 GB |
 //! | DirectML (GPU) | 822 MB | 1,3 GB | 3,5 GB |
 //!
 //! [`load_peak_bytes`] é uma reta (fixo + fator × arquivos) que fica acima de todos os pontos.
@@ -26,11 +27,20 @@ const MIB: u64 = 1024 * 1024;
 
 /// Pico de RAM estimado ao carregar a `kind` no `backend` com `model_bytes` de arquivos no disco.
 /// Na engine ONNX, o `backend` `Cpu` é a CPU EP (também a referência da verificação de sanidade).
-pub fn load_peak_bytes(kind: EngineKind, backend: Backend, model_bytes: u64) -> u64 {
+/// `precompiled`: no OpenVINO, o encoder pré-compilado (EPContext) já está no disco; sem ele, a
+/// carga compila e grava o EPContext.
+pub fn load_peak_bytes(
+    kind: EngineKind,
+    backend: Backend,
+    model_bytes: u64,
+    precompiled: bool,
+) -> u64 {
     let (fixed_mib, factor_tenths) = match (kind, backend) {
         (EngineKind::WhisperCpp, _) => (200, 12),
         (EngineKind::Onnx, Backend::Directml) => (1024, 14),
-        // OpenVINO, CPU EP e CUDA: o grafo inteiro passa pela CPU na carga.
+        (EngineKind::Onnx, Backend::Openvino) if precompiled => (1024, 14),
+        (EngineKind::Onnx, Backend::Openvino) => (400, 45),
+        // CPU EP e CUDA: o grafo inteiro passa pela CPU na carga.
         (EngineKind::Onnx, _) => (600, 40),
     };
     fixed_mib * MIB + model_bytes * factor_tenths / 10
@@ -69,23 +79,24 @@ mod tests {
 
     #[test]
     fn estimates_stay_above_the_measured_peaks() {
-        // (engine, backend, arquivos MB, pico medido MB) da tabela do módulo.
+        // (engine, backend, pré-compilado, arquivos MB, pico medido MB) da tabela do módulo.
         let measured = [
-            (EngineKind::WhisperCpp, Backend::Cpu, 74, 230),
-            (EngineKind::WhisperCpp, Backend::Cpu, 141, 342),
-            (EngineKind::WhisperCpp, Backend::Cpu, 1_549, 1_968),
-            (EngineKind::Onnx, Backend::Cpu, 128, 886),
-            (EngineKind::Onnx, Backend::Cpu, 234, 1_472),
-            (EngineKind::Onnx, Backend::Cpu, 1_848, 7_493),
-            (EngineKind::Onnx, Backend::Openvino, 128, 760),
-            (EngineKind::Onnx, Backend::Openvino, 234, 1_215),
-            (EngineKind::Onnx, Backend::Openvino, 1_848, 7_553),
-            (EngineKind::Onnx, Backend::Directml, 128, 822),
-            (EngineKind::Onnx, Backend::Directml, 234, 1_270),
-            (EngineKind::Onnx, Backend::Directml, 1_848, 3_463),
+            (EngineKind::WhisperCpp, Backend::Cpu, false, 74, 230),
+            (EngineKind::WhisperCpp, Backend::Cpu, false, 141, 342),
+            (EngineKind::WhisperCpp, Backend::Cpu, false, 1_549, 1_968),
+            (EngineKind::Onnx, Backend::Cpu, false, 128, 886),
+            (EngineKind::Onnx, Backend::Cpu, false, 234, 1_472),
+            (EngineKind::Onnx, Backend::Cpu, false, 1_848, 7_493),
+            (EngineKind::Onnx, Backend::Openvino, false, 128, 760),
+            (EngineKind::Onnx, Backend::Openvino, false, 234, 1_215),
+            (EngineKind::Onnx, Backend::Openvino, false, 1_848, 8_649),
+            (EngineKind::Onnx, Backend::Openvino, true, 1_848, 3_257),
+            (EngineKind::Onnx, Backend::Directml, false, 128, 822),
+            (EngineKind::Onnx, Backend::Directml, false, 234, 1_270),
+            (EngineKind::Onnx, Backend::Directml, false, 1_848, 3_463),
         ];
-        for (kind, backend, files, peak) in measured {
-            let estimate = load_peak_bytes(kind, backend, files * MB) / MB;
+        for (kind, backend, precompiled, files, peak) in measured {
+            let estimate = load_peak_bytes(kind, backend, files * MB, precompiled) / MB;
             assert!(
                 estimate >= peak && estimate <= peak * 3 / 2,
                 "{kind:?} {backend:?} {files} MB: estimativa {estimate} MB, medido {peak} MB"

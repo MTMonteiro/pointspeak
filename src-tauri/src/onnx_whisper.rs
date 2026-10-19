@@ -24,7 +24,7 @@
 //! dispositivo é o `transcriber.rs`.
 
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use ort::environment::Environment;
 use ort::ep::{self, ExecutionProvider};
@@ -84,9 +84,9 @@ fn decoder_targets(backend: Backend, device: DmlDevice) -> Vec<(Backend, DmlDevi
     }
 }
 
-/// Pasta do cache de compilação do OpenVINO, dentro da pasta do modelo (sai junto quando o modelo é
-/// apagado ou baixado de novo). Sem ela a NPU recompila o encoder a cada carga; a primeira
-/// compilação do large-v3-turbo levou ~17 min e gerou 1,35 GB.
+/// Pasta do OpenVINO dentro da pasta do modelo (sai junto quando o modelo é apagado ou baixado de
+/// novo): o encoder pré-compilado ([`open_openvino_encoder`]) ou, se ele não pôde ser gerado, o
+/// cache de compilação. A primeira compilação do large-v3-turbo na NPU leva ~14–17 min.
 const OPENVINO_CACHE_DIR: &str = "openvino-cache";
 
 /// OpenVINO do app no `device` (`device_type` `NPU` ou `GPU`). A detecção (`onnx.rs`) usa a mesma
@@ -142,7 +142,11 @@ impl OrtWhisperTranscriber {
         )
         .map_err(|e| OnnxLoadError::Model(e.to_string()))?;
         let device = device.unwrap_or(DmlDevice::Gpu);
-        let encoder = open_session(environment, backend, device, dir, info.encoder.file_name())?;
+        let encoder = if backend == Backend::Openvino {
+            open_openvino_encoder(environment, device, dir, info.encoder.file_name())?
+        } else {
+            open_session(environment, backend, device, dir, info.encoder.file_name())?
+        };
         let (decoder, decoder_past, decoder_backend) =
             open_decoders(environment, backend, device, dir, info)?;
         let dims = cache_dims(&decoder).map_err(OnnxLoadError::Model)?;
@@ -278,7 +282,18 @@ fn open_session(
     dir: &Path,
     file: &str,
 ) -> Result<Session, OnnxLoadError> {
-    let model = &dir.join(file);
+    let builder = session_builder(environment, backend, device, Some(dir))?;
+    commit(builder, &dir.join(file))
+}
+
+/// Builder com as opções do app e a EP do backend. No OpenVINO, `cache_dir` = pasta do modelo
+/// cujo [`OPENVINO_CACHE_DIR`] guarda o cache de compilação (`None` = sem cache).
+fn session_builder(
+    environment: &Environment,
+    backend: Backend,
+    device: DmlDevice,
+    cache_dir: Option<&Path>,
+) -> Result<SessionBuilder, OnnxLoadError> {
     let model_err = |e: ort::Error<SessionBuilder>| OnnxLoadError::Model(e.to_string());
     let mut builder = Session::builder(environment)
         .map_err(|e| OnnxLoadError::Model(e.to_string()))?
@@ -298,7 +313,11 @@ fn open_session(
             .with_parallel_execution(false)
             .map_err(provider_err)?;
     }
-    register_provider(&mut builder, backend, device, dir)?;
+    register_provider(&mut builder, backend, device, cache_dir)?;
+    Ok(builder)
+}
+
+fn commit(mut builder: SessionBuilder, model: &Path) -> Result<Session, OnnxLoadError> {
     let name = model.file_name().unwrap_or_default().to_string_lossy();
     builder
         .commit_from_file(model)
@@ -309,17 +328,139 @@ fn register_provider(
     builder: &mut SessionBuilder,
     backend: Backend,
     device: DmlDevice,
-    dir: &Path,
+    cache_dir: Option<&Path>,
 ) -> Result<(), OnnxLoadError> {
     let provider = |e: ort::Error| OnnxLoadError::Provider(e.to_string());
     match backend {
         Backend::Directml => directml(device).register(builder).map_err(provider),
-        Backend::Openvino => openvino(device)
-            .with_cache_dir(dir.join(OPENVINO_CACHE_DIR).display())
-            .register(builder)
-            .map_err(provider),
+        Backend::Openvino => {
+            let mut ep = openvino(device);
+            if let Some(dir) = cache_dir {
+                ep = ep.with_cache_dir(dir.join(OPENVINO_CACHE_DIR).display());
+            }
+            ep.register(builder).map_err(provider)
+        }
         Backend::Cuda => ep::CUDA::default().register(builder).map_err(provider),
         Backend::Auto | Backend::Cpu | Backend::Vulkan => Ok(()),
+    }
+}
+
+/// Encoder pré-compilado do OpenVINO no `device` (modelo EPContext): `<cache>/encoder_<npu|gpu>.onnx`,
+/// um ONNX de um nó que aponta o blob compilado ao lado (`…_OpenVINOExecutionProvider.bin`).
+fn openvino_context_path(dir: &Path, device: DmlDevice) -> PathBuf {
+    dir.join(OPENVINO_CACHE_DIR)
+        .join(format!("encoder_{}.onnx", device.label().to_lowercase()))
+}
+
+/// Algum encoder pré-compilado do OpenVINO na pasta `dir` do modelo: a carga lê só o blob (pico
+/// de RAM bem menor, `pointspeak_core::memory`).
+pub fn openvino_precompiled(dir: &Path) -> bool {
+    DmlDevice::ORDER
+        .iter()
+        .any(|&device| openvino_context_path(dir, device).is_file())
+}
+
+/// Encoder no OpenVINO pelo modelo pré-compilado (EPContext). Sem ele, compila o `file` com a
+/// entrada de tamanho fixo (lote 1: a NPU só exporta modelos estáticos) e grava o EPContext para as
+/// próximas cargas; o cache de compilação antigo sai (o EPContext o substitui). Um EPContext que
+/// não abre (ex.: driver novo) é apagado e gerado de novo; se a geração falha, abre como antes, com
+/// o cache de compilação.
+fn open_openvino_encoder(
+    environment: &Environment,
+    device: DmlDevice,
+    dir: &Path,
+    file: &str,
+) -> Result<Session, OnnxLoadError> {
+    let context = openvino_context_path(dir, device);
+    let label = runtime_label(Backend::Openvino, Some(device));
+    if context.is_file() {
+        let builder = session_builder(environment, Backend::Openvino, device, None)?;
+        match commit(builder, &context) {
+            Ok(session) => return Ok(session),
+            Err(e) => {
+                eprintln!(
+                    "[pointspeak] encoder pré-compilado ({label}) não abriu, gerando de novo: {e:?}"
+                );
+                remove_openvino_context(&context);
+            }
+        }
+    }
+    match export_openvino_context(environment, device, dir, file, &context) {
+        Ok(session) => {
+            remove_compile_cache(dir);
+            eprintln!(
+                "[pointspeak] encoder pré-compilado ({label}) gravado em {}",
+                context.display()
+            );
+            Ok(session)
+        }
+        Err(e) => {
+            eprintln!("[pointspeak] encoder pré-compilado ({label}) não foi gerado: {e:?}");
+            remove_openvino_context(&context);
+            open_session(environment, Backend::Openvino, device, dir, file)
+        }
+    }
+}
+
+fn export_openvino_context(
+    environment: &Environment,
+    device: DmlDevice,
+    dir: &Path,
+    file: &str,
+    context: &Path,
+) -> Result<Session, OnnxLoadError> {
+    if let Some(parent) = context.parent() {
+        fs::create_dir_all(parent).map_err(|e| OnnxLoadError::Model(e.to_string()))?;
+    }
+    let model_err = |e: ort::Error<SessionBuilder>| OnnxLoadError::Model(e.to_string());
+    let builder = session_builder(environment, Backend::Openvino, device, None)?
+        .with_dimension_override("batch_size", 1)
+        .map_err(model_err)?
+        .with_config_entry("ep.context_enable", "1")
+        .map_err(model_err)?
+        .with_config_entry("ep.context_embed_mode", "0")
+        .map_err(model_err)?
+        .with_config_entry("ep.context_file_path", context.display().to_string())
+        .map_err(model_err)?;
+    let session = commit(builder, &dir.join(file))?;
+    if !context.is_file() {
+        return Err(OnnxLoadError::Model(format!(
+            "{} não foi gravado",
+            context.display()
+        )));
+    }
+    Ok(session)
+}
+
+/// Apaga o EPContext e o blob dele.
+fn remove_openvino_context(context: &Path) {
+    let blob = context.with_file_name(format!(
+        "{}_OpenVINOExecutionProvider.bin",
+        context.file_stem().unwrap_or_default().to_string_lossy()
+    ));
+    for path in [context, blob.as_path()] {
+        let _ = fs::remove_file(path);
+    }
+}
+
+/// Apaga os blobs do cache de compilação (`*.blob`, gravados como somente leitura) da pasta `dir`
+/// do modelo.
+fn remove_compile_cache(dir: &Path) {
+    let Ok(entries) = fs::read_dir(dir.join(OPENVINO_CACHE_DIR)) else {
+        return;
+    };
+    for path in entries.flatten().map(|entry| entry.path()) {
+        if path.extension().is_some_and(|ext| ext == "blob") {
+            if let Ok(meta) = fs::metadata(&path) {
+                let mut permissions = meta.permissions();
+                #[allow(clippy::permissions_set_readonly_false)]
+                permissions.set_readonly(false);
+                let _ = fs::set_permissions(&path, permissions);
+            }
+            if let Err(e) = fs::remove_file(&path) {
+                eprintln!("[pointspeak] cache do OpenVINO: {}: {e}", path.display());
+            }
+        }
     }
 }
 

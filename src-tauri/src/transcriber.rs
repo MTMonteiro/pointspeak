@@ -53,7 +53,7 @@ use whisper_rs::{
 };
 
 use crate::dictation::DictationHandle;
-use crate::onnx_whisper::{cpu_probe_reference, OrtWhisperTranscriber};
+use crate::onnx_whisper::{cpu_probe_reference, openvino_precompiled, OrtWhisperTranscriber};
 use crate::{models, onnx, settings, AppState};
 
 /// Teto de threads da inferência: acima disso o ganho some e o resto do sistema engasga.
@@ -279,14 +279,17 @@ fn available_physical_memory() -> Option<u64> {
 }
 
 /// Aviso se o pico de RAM da carga de `kind` no `backend` (com os arquivos da `variant` do
-/// `model`) não cabe na memória livre.
+/// `model` na pasta `dir` dos modelos) não cabe na memória livre.
 fn memory_warning(
     kind: EngineKind,
     backend: Backend,
     model: ModelId,
     variant: ModelVariant,
+    dir: &Path,
 ) -> Option<String> {
-    let needed = load_peak_bytes(kind, backend, variant.size_bytes(model));
+    let precompiled = backend == Backend::Openvino
+        && openvino_precompiled(&ModelVariant::Onnx.local_path(model, dir));
+    let needed = load_peak_bytes(kind, backend, variant.size_bytes(model), precompiled);
     memory_shortage(needed, available_memory()?)
 }
 
@@ -301,7 +304,7 @@ fn load_engine(
         EngineKind::Onnx if !plan.onnx_ready => EngineKind::WhisperCpp,
         kind => kind,
     };
-    if let Some(warning) = memory_warning(kind, plan.backend, plan.model, kind.variant()) {
+    if let Some(warning) = memory_warning(kind, plan.backend, plan.model, kind.variant(), dir) {
         eprintln!("[pointspeak] modelo não carregado: {warning}");
         log::warn!("modelo não carregado: {warning}");
         return Err(TranscribeError::Load(warning));
@@ -346,6 +349,7 @@ fn load_engine(
                                 Backend::Cpu,
                                 plan.model,
                                 ModelVariant::Onnx,
+                                dir,
                             ) {
                                 eprintln!("[pointspeak] verificação de sanidade ({label}) fica para a próxima carga: {warning}");
                                 return None;
