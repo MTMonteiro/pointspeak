@@ -242,12 +242,19 @@ fn check_device(
     let Some(reference) = reference else {
         return Ok(());
     };
-    let score = engine
-        .probe_score(reference)
+    let report = engine
+        .probe_report(reference)
         .map_err(|e| OnnxLoadError::Model(format!("verificação de sanidade: {e}")))?;
+    // Uma linha por passo (encoder e cada passo do decoder): quando o DirectML reprova, é o que
+    // diz se foi NaN/infinito, tamanho, encoder ou decoder (checklist manual 8.22).
+    for line in report.log_lines() {
+        log::info!("verificação de sanidade ({label}) {line}");
+        eprintln!("[pointspeak] verificação de sanidade ({label}) {line}");
+    }
+    let score = report.score;
     log::info!("verificação de sanidade ({label}): correlação {score:.4}");
     eprintln!("[pointspeak] verificação de sanidade ({label}): correlação {score:.4}");
-    probe_verdict(score).map_err(OnnxLoadError::Diverged)
+    probe_verdict(&report).map_err(OnnxLoadError::Diverged)
 }
 
 /// Garante a engine do config no slot e roda `f` nela. O `bool` diz se a engine foi carregada
