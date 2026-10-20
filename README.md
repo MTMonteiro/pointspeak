@@ -16,7 +16,8 @@ Versão atual: **1.0.0**.
   Para a aceleração por GPU/NPU (DirectML): placa ou NPU com DirectX 12. NPU Intel (Core Ultra) que o
   DirectML não encontra roda pelo cartão `OpenVINO (Intel)`. Sem nada disso, o ditado roda na CPU.
 - **Linux:** x64 com AVX2, sessão **X11** ou **Wayland**, bandeja do sistema (no GNOME, a extensão
-  AppIndicator). No Wayland, a colagem precisa do `wtype` ou do `ydotool` (com o serviço `ydotoold` rodando).
+  AppIndicator). No Wayland, o atalho e a colagem precisam do grupo `input` (`sudo usermod -aG input $USER`
+  e entrar de novo na sessão; a seção **Atalho** avisa quando falta).
   O .deb foi feito para Ubuntu 24.04 / Debian e derivados; o AppImage roda em distribuições com glibc igual ou
   mais nova.
 - **Disco:** de 75 MB (modelo `tiny`) a 1,6 GB (modelo `large-v3-turbo`) para os modelos, além do app.
@@ -37,8 +38,9 @@ Versão atual: **1.0.0**.
 sudo apt install ./PointSpeak_1.0.0_amd64.deb
 ```
 
-O `apt` instala as dependências e, como recomendados, o `wtype` e o `ydotool` (colagem no Wayland). Para
-remover: `sudo apt remove point-speak`.
+O `apt` instala as dependências e a regra do sistema (udev) que deixa o grupo `input` usar o teclado
+virtual da colagem no Wayland (`/usr/lib/udev/rules.d/70-pointspeak-uinput.rules`). Para remover:
+`sudo apt remove point-speak`.
 
 ### Linux (AppImage)
 
@@ -83,8 +85,12 @@ a transcrição roda (Automático, NPU/GPU via DirectML no Windows, ou CPU). Pel
 - **No Wayland a pílula não segue o cursor:** é esperado (no Wayland as janelas do PointSpeak rodam pelo
   XWayland, para a pílula não tirar o foco do campo onde você dita). O Wayland não informa a posição do cursor a outros
   apps, então a pílula fica fixa no centro, embaixo da tela.
-- **No Wayland o texto não é colado (`Falha ao colar`):** instale o `wtype` (`sudo apt install wtype`) ou o
-  `ydotool` com o `ydotoold` ativo.
+- **No Wayland o texto não é colado (`Falha ao colar`):** o PointSpeak cola por um teclado virtual próprio
+  (`/dev/uinput`), que pede o grupo `input` (veja o item abaixo). O .deb já instala a regra que libera o
+  `/dev/uinput` para esse grupo; no **AppImage**, crie-a uma vez:
+  `echo 'KERNEL=="uinput", SUBSYSTEM=="misc", GROUP="input", MODE="0660", OPTIONS+="static_node=uinput"' | sudo tee /etc/udev/rules.d/70-pointspeak-uinput.rules && sudo udevadm control --reload-rules && sudo udevadm trigger --sysname-match=uinput`.
+  Num layout de teclado como o Dvorak, o `Ctrl+V` do teclado virtual vira outra tecla (ele manda a posição
+  da tecla). O `wtype` (KDE, Sway) e o `ydotool` continuam como alternativas.
 - **No Wayland (Ubuntu 22.04 ou mais novo, Fedora…) o atalho não faz nada, ou o `Ctrl+Ctrl` no Linux:** o
   PointSpeak lê o teclado direto do sistema (`/dev/input`), o que pede o grupo `input`. Rode
   `sudo usermod -aG input $USER`, saia da sessão e entre de novo. A seção **Atalho** avisa quando falta isso.
