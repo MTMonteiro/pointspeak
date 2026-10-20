@@ -184,6 +184,10 @@ fn paste(enigo: &mut Option<Enigo>, display: DisplayServer, keys: PasteKeys) -> 
     for method in paste_strategy(display) {
         let result = match method {
             PasteMethod::Enigo => enigo_paste(enigo, keys),
+            #[cfg(target_os = "linux")]
+            PasteMethod::Uinput => crate::linux_uinput::paste(keys),
+            #[cfg(not(target_os = "linux"))]
+            PasteMethod::Uinput => Err("uinput: só no Linux".into()),
             PasteMethod::Wtype => run_tool("wtype", wtype_args(keys)),
             PasteMethod::Ydotool => run_tool("ydotool", ydotool_args(keys)),
         };

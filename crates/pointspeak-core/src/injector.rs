@@ -120,6 +120,9 @@ pub fn paste_keys_for(focused: &FocusedApp) -> PasteKeys {
 /// Como as teclas da colagem chegam ao app em foco.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum PasteMethod {
+    /// Teclado virtual do próprio app (`/dev/uinput`, Linux): funciona em qualquer compositor
+    /// Wayland, inclusive o GNOME, que não tem o protocolo do `wtype`.
+    Uinput,
     /// enigo: SendInput no Windows, XTest no X11 (no Wayland só alcança apps do XWayland).
     Enigo,
     /// `wtype` (protocolo virtual-keyboard; wlroots, KDE).
@@ -132,9 +135,21 @@ pub enum PasteMethod {
 pub fn paste_strategy(display: DisplayServer) -> Vec<PasteMethod> {
     match display {
         DisplayServer::Windows | DisplayServer::X11 => vec![PasteMethod::Enigo],
-        DisplayServer::Wayland => {
-            vec![PasteMethod::Wtype, PasteMethod::Ydotool, PasteMethod::Enigo]
-        }
+        DisplayServer::Wayland => vec![
+            PasteMethod::Uinput,
+            PasteMethod::Wtype,
+            PasteMethod::Ydotool,
+            PasteMethod::Enigo,
+        ],
+    }
+}
+
+/// Teclas da colagem em códigos do kernel (`input-event-codes.h`), com o valor (1 aperta, 0 solta):
+/// 29 = Ctrl esquerdo, 47 = V, 42 = Shift esquerdo, 110 = Insert.
+pub fn paste_key_events(keys: PasteKeys) -> &'static [(u16, i32)] {
+    match keys {
+        PasteKeys::CtrlV => &[(29, 1), (47, 1), (47, 0), (29, 0)],
+        PasteKeys::ShiftInsert => &[(42, 1), (110, 1), (110, 0), (42, 0)],
     }
 }
 
@@ -458,7 +473,24 @@ mod tests {
         assert_eq!(paste_strategy(DisplayServer::X11), [PasteMethod::Enigo]);
         assert_eq!(
             paste_strategy(DisplayServer::Wayland),
-            [PasteMethod::Wtype, PasteMethod::Ydotool, PasteMethod::Enigo]
+            [
+                PasteMethod::Uinput,
+                PasteMethod::Wtype,
+                PasteMethod::Ydotool,
+                PasteMethod::Enigo
+            ]
+        );
+    }
+
+    #[test]
+    fn uinput_paste_events_press_and_release_in_order() {
+        assert_eq!(
+            paste_key_events(PasteKeys::CtrlV),
+            [(29, 1), (47, 1), (47, 0), (29, 0)]
+        );
+        assert_eq!(
+            paste_key_events(PasteKeys::ShiftInsert),
+            [(42, 1), (110, 1), (110, 0), (42, 0)]
         );
     }
 

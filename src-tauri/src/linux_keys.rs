@@ -37,7 +37,7 @@ pub enum LinuxTarget {
 }
 
 /// Mensagem sem permissão para ler o teclado.
-pub const NO_PERMISSION: &str = "Para o atalho funcionar no Wayland (e para os toques duplos, como Ctrl+Ctrl), o PointSpeak precisa ler o teclado: rode `sudo usermod -aG input $USER` num terminal, saia da sessão e entre de novo.";
+pub const NO_PERMISSION: &str = "Para o atalho funcionar no Wayland (e para os toques duplos, como Ctrl+Ctrl), o PointSpeak precisa ler o teclado (o mesmo vale para colar o texto): rode `sudo usermod -aG input $USER` num terminal, saia da sessão e entre de novo.";
 
 /// Intervalo do rescan de `/dev/input` (teclado conectado depois de ligar o atalho).
 const RESCAN_EVERY: Duration = Duration::from_secs(3);
@@ -156,6 +156,10 @@ fn read_device(path: PathBuf, mut file: File) {
 }
 
 fn on_key(code: u16, edge: KeyEdge) {
+    // As teclas da colagem (o próprio teclado virtual) não contam para o atalho.
+    if crate::linux_uinput::injecting() {
+        return;
+    }
     let action: Option<KeyAction> = {
         let mut detector = DETECTOR.lock().unwrap_or_else(|e| e.into_inner());
         match detector.as_mut() {

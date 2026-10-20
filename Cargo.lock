@@ -2898,6 +2898,7 @@ dependencies = [
  "cpal",
  "enigo",
  "hound",
+ "libc",
  "libloading 0.9.0",
  "log",
  "num_cpus",

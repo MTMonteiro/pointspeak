@@ -21,6 +21,8 @@ pub mod hud;
 pub mod injector;
 #[cfg(target_os = "linux")]
 mod linux_keys;
+#[cfg(target_os = "linux")]
+mod linux_uinput;
 pub mod models;
 pub mod onnx;
 pub mod onnx_parakeet;
@@ -127,6 +129,12 @@ pub fn run() {
             double_tap::init(handle);
             #[cfg(target_os = "linux")]
             linux_keys::init(handle);
+            // No Wayland a colagem é pelo teclado virtual: criado já, para o compositor
+            // reconhecê-lo antes do primeiro ditado.
+            #[cfg(target_os = "linux")]
+            if linux_keys::use_for_combos() {
+                linux_uinput::prepare();
+            }
             let config = app.state::<AppState>().config.lock().unwrap().clone();
             let backend = dictation::TauriBackend::new(handle.clone(), display);
             app.manage(dictation::spawn(
