@@ -78,6 +78,7 @@ pub fn set_target(target: Option<LinuxTarget>) -> Result<(), String> {
                 "Nenhum teclado encontrado em /dev/input.".to_string()
             });
         }
+        eprintln!("[pointspeak] atalho pelo /dev/input ({open} dispositivos)");
         SCANNER.get_or_init(|| {
             let _ = std::thread::Builder::new()
                 .name("pointspeak-input-scan".into())
@@ -164,6 +165,8 @@ fn on_key(code: u16, edge: KeyEdge) {
         }
     };
     if let (Some(action), Some(app)) = (action, APP.get()) {
+        // Só a ação do atalho, nunca as teclas.
+        eprintln!("[pointspeak] atalho: {action:?}");
         if let Some(dictation) = app.try_state::<DictationHandle>() {
             dictation.send(Input::Hotkey(action, Instant::now()));
         }
