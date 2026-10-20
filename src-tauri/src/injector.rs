@@ -192,7 +192,10 @@ fn paste(enigo: &mut Option<Enigo>, display: DisplayServer, keys: PasteKeys) -> 
             PasteMethod::Ydotool => run_tool("ydotool", ydotool_args(keys)),
         };
         match result {
-            Ok(()) => return Ok(()),
+            Ok(()) => {
+                log::info!("colagem: {method:?}");
+                return Ok(());
+            }
             Err(err) => {
                 log::debug!("injector: {method:?} falhou: {err}");
                 failures.push(err);

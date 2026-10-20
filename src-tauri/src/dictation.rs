@@ -251,11 +251,17 @@ impl<B: Backend> Executor<B> {
                 }
                 Effect::Transcribe => match self.recorded.take() {
                     Some(audio) if !audio.is_no_speech() => {
+                        log::info!(
+                            "ditado: {:.1} s gravados",
+                            audio.samples.len() as f32 / 16_000.0
+                        );
                         self.backend.transcribe(audio.samples, self.inbox.clone())
                     }
-                    _ => self
-                        .pending
-                        .push_back(Input::TranscriptionFinished(Err(ErrorKind::NoSpeech))),
+                    _ => {
+                        log::info!("ditado: sem fala");
+                        self.pending
+                            .push_back(Input::TranscriptionFinished(Err(ErrorKind::NoSpeech)))
+                    }
                 },
                 Effect::Inject(text) => self.backend.inject(text, self.inbox.clone()),
                 Effect::ScheduleDismiss(after) => self.dismiss_at = Some(Instant::now() + after),
@@ -450,10 +456,19 @@ impl Backend for TauriBackend {
             Input::TranscriptionFinished(Err(ErrorKind::TranscriptionFailed)),
             move || {
                 let config = current_config(&app);
+                let started = std::time::Instant::now();
                 let result = transcriber::transcribe(&app, &config, &audio).map_err(|e| {
                     eprintln!("[pointspeak] transcrição: {e}");
                     e.kind()
                 });
+                if let Ok(text) = &result {
+                    // Só o tamanho, nunca o texto.
+                    log::info!(
+                        "ditado: {} caracteres em {:.2} s",
+                        text.chars().count(),
+                        started.elapsed().as_secs_f32()
+                    );
+                }
                 Input::TranscriptionFinished(result)
             },
         );
