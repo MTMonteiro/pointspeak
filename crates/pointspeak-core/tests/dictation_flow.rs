@@ -132,7 +132,12 @@ fn recording_flows_through_vad_transcriber_hotswap_and_wayland_paste() {
     assert_eq!(keys, PasteKeys::ShiftInsert);
     assert_eq!(
         paste_strategy(DisplayServer::Wayland),
-        [PasteMethod::Wtype, PasteMethod::Ydotool, PasteMethod::Enigo]
+        [
+            PasteMethod::Uinput,
+            PasteMethod::Wtype,
+            PasteMethod::Ydotool,
+            PasteMethod::Enigo
+        ]
     );
     let mut clipboard = FakeClipboard {
         text: Some("clipboard anterior".into()),
@@ -155,7 +160,14 @@ fn recording_flows_through_vad_transcriber_hotswap_and_wayland_paste() {
     .unwrap();
 
     assert_eq!(outcome, PasteOutcome::Pasted);
-    assert_eq!(tried, [PasteMethod::Wtype, PasteMethod::Ydotool]);
+    assert_eq!(
+        tried,
+        [
+            PasteMethod::Uinput,
+            PasteMethod::Wtype,
+            PasteMethod::Ydotool
+        ]
+    );
     assert_eq!(clipboard.text.as_deref(), Some("clipboard anterior"));
     assert!(dictation
         .handle(Input::InjectFinished(Ok(())))
