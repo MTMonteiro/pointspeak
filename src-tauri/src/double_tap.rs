@@ -15,10 +15,11 @@
 //!   AutoHotkey, e o Windows não ativa o menu.
 //! - Fora do Windows: escolher um toque duplo dá erro (o `set_config` mostra a mensagem).
 
+#[cfg(not(target_os = "linux"))]
 use pointspeak_core::hotkey::ModifierKey;
 
-/// Mensagem quando o sistema não tem o hook (Linux).
-#[cfg(not(windows))]
+/// Mensagem quando o sistema não tem o hook (macOS; o Linux usa o `linux_keys.rs`).
+#[cfg(not(any(windows, target_os = "linux")))]
 const UNSUPPORTED: &str =
     "O atalho de toque duplo (ex.: Alt+Alt) só funciona no Windows. Escolha uma combinação com tecla.";
 
@@ -27,7 +28,9 @@ pub fn init(app: &tauri::AppHandle) {
     imp::init(app);
 }
 
-/// Liga (`Some`) ou desliga (`None`) o toque duplo. Ligar instala o hook na primeira vez.
+/// Liga (`Some`) ou desliga (`None`) o toque duplo. Ligar instala o hook na primeira vez. No
+/// Linux o toque duplo é do `linux_keys.rs`.
+#[cfg(not(target_os = "linux"))]
 pub fn set_target(target: Option<ModifierKey>) -> Result<(), String> {
     imp::set_target(target)
 }
@@ -184,10 +187,12 @@ mod imp {
 
 #[cfg(not(windows))]
 mod imp {
+    #[cfg(not(target_os = "linux"))]
     use pointspeak_core::hotkey::ModifierKey;
 
     pub fn init(_app: &tauri::AppHandle) {}
 
+    #[cfg(not(target_os = "linux"))]
     pub fn set_target(target: Option<ModifierKey>) -> Result<(), String> {
         match target {
             Some(_) => Err(super::UNSUPPORTED.to_string()),
