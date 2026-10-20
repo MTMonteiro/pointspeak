@@ -1,6 +1,8 @@
 //! Atalho global (`tauri-plugin-global-shortcut`): conversão do [`Accelerator`] do núcleo e registro.
 //! O toque duplo num modificador (`Alt+Alt`) não passa pelo plugin: é o hook de teclado do
-//! `double_tap.rs` (só Windows). Os dois são um [`Target`] do [`HotkeyBinding`].
+//! `double_tap.rs` no Windows e a leitura de `/dev/input` (`linux_keys.rs`) no Linux. No Wayland as
+//! combinações também vão para o `/dev/input` (o plugin só funciona no X11). Os dois são um
+//! [`Target`] do [`HotkeyBinding`].
 //!
 //! O plugin roda cada registro na thread principal e bloqueia até ela responder. Por isso
 //! [`HotkeyBinding`] só é usado na thread principal (`setup`, `set_config` síncrono e as tarefas que
@@ -11,6 +13,7 @@ use std::fmt;
 use std::sync::Mutex;
 
 use pointspeak_core::hotkey::{Accelerator, Hotkey, ModifierKey};
+use pointspeak_core::linux_input::KeyCombo;
 use tauri::{AppHandle, Runtime, State};
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut};
 
@@ -141,8 +144,8 @@ fn function_key(key: &str) -> Option<Code> {
 /// O que fica registrado no SO para o atalho do ditado.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Target {
-    /// Combinação, pelo plugin de atalho global.
-    Shortcut(Shortcut),
+    /// Combinação, pelo plugin de atalho global (ou, no Wayland, pelos códigos do kernel).
+    Shortcut(Shortcut, KeyCombo),
     /// Toque duplo no modificador, pelo hook de teclado (`double_tap.rs`).
     DoubleTap(ModifierKey),
 }
@@ -150,7 +153,7 @@ pub enum Target {
 impl fmt::Display for Target {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Target::Shortcut(shortcut) => f.write_str(&shortcut.into_string()),
+            Target::Shortcut(shortcut, _) => f.write_str(&shortcut.into_string()),
             Target::DoubleTap(key) => write!(f, "{0}+{0}", key.label()),
         }
     }
@@ -160,7 +163,8 @@ impl fmt::Display for Target {
 pub fn parse(hotkey: &str) -> Result<Target, String> {
     match Hotkey::parse(hotkey).map_err(|e| e.to_string())? {
         Hotkey::Combo(accelerator) => to_shortcut(&accelerator)
-            .map(Target::Shortcut)
+            .zip(KeyCombo::from_accelerator(&accelerator))
+            .map(|(shortcut, combo)| Target::Shortcut(shortcut, combo))
             .ok_or_else(|| format!("Tecla não reconhecida no atalho: {hotkey}")),
         Hotkey::DoubleTap(key) => Ok(Target::DoubleTap(key)),
     }
@@ -171,29 +175,66 @@ pub fn conflict_message(hotkey: &str) -> String {
     format!("{hotkey} já é usado por outro app ou pelo sistema. Escolha outra combinação.")
 }
 
+/// Por que o SO não registrou o atalho.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RegisterError {
+    /// Outro app ou o sistema já usa a combinação (o texto em PT-BR é o [`conflict_message`]).
+    Conflict(String),
+    /// O atalho não dá para ligar aqui; o texto já explica (ex.: falta o grupo `input` no Linux).
+    Unavailable(String),
+}
+
+impl fmt::Display for RegisterError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            RegisterError::Conflict(e) | RegisterError::Unavailable(e) => f.write_str(e),
+        }
+    }
+}
+
 /// Registro no SO, separado do [`HotkeyBinding`] para os testes usarem um fake.
 pub trait Registrar {
-    fn register(&self, target: Target) -> Result<(), String>;
+    fn register(&self, target: Target) -> Result<(), RegisterError>;
     fn unregister(&self, target: Target) -> Result<(), String>;
 }
 
 impl<R: Runtime> Registrar for AppHandle<R> {
-    fn register(&self, target: Target) -> Result<(), String> {
+    fn register(&self, target: Target) -> Result<(), RegisterError> {
         match target {
-            Target::Shortcut(shortcut) => self
+            #[cfg(target_os = "linux")]
+            Target::Shortcut(_, combo) if crate::linux_keys::use_for_combos() => {
+                crate::linux_keys::set_target(Some(crate::linux_keys::LinuxTarget::Combo(combo)))
+                    .map_err(RegisterError::Unavailable)
+            }
+            Target::Shortcut(shortcut, _) => self
                 .global_shortcut()
                 .register(shortcut)
-                .map_err(|e| e.to_string()),
-            Target::DoubleTap(key) => crate::double_tap::set_target(Some(key)),
+                .map_err(|e| RegisterError::Conflict(e.to_string())),
+            #[cfg(target_os = "linux")]
+            Target::DoubleTap(key) => {
+                crate::linux_keys::set_target(Some(crate::linux_keys::LinuxTarget::DoubleTap(key)))
+                    .map_err(RegisterError::Unavailable)
+            }
+            #[cfg(not(target_os = "linux"))]
+            Target::DoubleTap(key) => {
+                crate::double_tap::set_target(Some(key)).map_err(RegisterError::Unavailable)
+            }
         }
     }
 
     fn unregister(&self, target: Target) -> Result<(), String> {
         match target {
-            Target::Shortcut(shortcut) => self
+            #[cfg(target_os = "linux")]
+            Target::Shortcut(..) if crate::linux_keys::use_for_combos() => {
+                crate::linux_keys::set_target(None)
+            }
+            Target::Shortcut(shortcut, _) => self
                 .global_shortcut()
                 .unregister(shortcut)
                 .map_err(|e| e.to_string()),
+            #[cfg(target_os = "linux")]
+            Target::DoubleTap(_) => crate::linux_keys::set_target(None),
+            #[cfg(not(target_os = "linux"))]
             Target::DoubleTap(_) => crate::double_tap::set_target(None),
         }
     }
@@ -212,6 +253,8 @@ struct Binding {
     registered: bool,
     paused: bool,
     suspended: bool,
+    /// Por que o atalho desejado não está ligado (a seção Atalho mostra, [`hotkey_status`]).
+    error: Option<String>,
 }
 
 impl HotkeyBinding {
@@ -232,14 +275,17 @@ impl HotkeyBinding {
         if b.registered && b.wanted == Some(shortcut) {
             return Ok(());
         }
-        registrar.register(shortcut).map_err(|e| {
+        if let Err(e) = registrar.register(shortcut) {
             log::warn!("atalho {label} recusado: {e}");
-            match shortcut {
-                Target::Shortcut(_) => conflict_message(label),
-                // O hook não tem conflito: o erro já diz o motivo (ex.: só no Windows).
-                Target::DoubleTap(_) => e,
-            }
-        })?;
+            let message = match e {
+                RegisterError::Conflict(_) => conflict_message(label),
+                // Sem conflito: o erro já diz o motivo (ex.: falta o grupo `input` no Linux).
+                RegisterError::Unavailable(e) => e,
+            };
+            b.error = Some(message.clone());
+            return Err(message);
+        }
+        b.error = None;
         if b.suspended {
             if let Err(e) = registrar.unregister(shortcut) {
                 log::warn!("não foi possível soltar o atalho suspenso: {e}");
@@ -288,6 +334,11 @@ impl HotkeyBinding {
         })
     }
 
+    /// Por que o atalho não está ligado, se a última tentativa falhou.
+    pub fn error(&self) -> Option<String> {
+        self.lock().error.clone()
+    }
+
     /// O atalho desejado é este (para ignorar eventos de outro atalho registrado por engano).
     pub fn is_current(&self, shortcut: &Target) -> bool {
         self.lock().wanted.as_ref() == Some(shortcut)
@@ -314,11 +365,19 @@ impl Binding {
             return Ok(());
         }
         if let Some(shortcut) = self.wanted {
-            registrar.register(shortcut)?;
+            registrar.register(shortcut).map_err(|e| e.to_string())?;
             self.registered = true;
         }
         Ok(())
     }
+}
+
+/// Comando Tauri: por que o atalho não está funcionando (`null` = está ligado ou em pausa). A
+/// falha ao abrir o app só aparecia no log; a seção Atalho mostra este texto. Síncrono de
+/// propósito: roda na thread principal (veja o topo).
+#[tauri::command]
+pub fn hotkey_status(binding: State<'_, HotkeyBinding>) -> Option<String> {
+    binding.error()
 }
 
 /// Comando Tauri: suspende o atalho global enquanto a seção Atalho captura uma combinação, para a
@@ -423,15 +482,22 @@ mod tests {
     #[derive(Default)]
     struct FakeOs {
         taken: Vec<Target>,
+        /// Atalhos que não dá para ligar (ex.: sem o grupo `input` no Linux).
+        blocked: Vec<Target>,
         registered: RefCell<Vec<Target>>,
         calls: RefCell<Vec<String>>,
     }
 
     impl Registrar for FakeOs {
-        fn register(&self, target: Target) -> Result<(), String> {
+        fn register(&self, target: Target) -> Result<(), RegisterError> {
             self.calls.borrow_mut().push(format!("+{target}"));
             if self.taken.contains(&target) {
-                return Err("HotKey already registered".into());
+                return Err(RegisterError::Conflict("HotKey already registered".into()));
+            }
+            if self.blocked.contains(&target) {
+                return Err(RegisterError::Unavailable(
+                    "sem permissão para ler o teclado".into(),
+                ));
             }
             self.registered.borrow_mut().push(target);
             Ok(())
@@ -504,6 +570,34 @@ mod tests {
         assert!(os.registered().is_empty());
         binding.suspend(&os, false).unwrap();
         assert_eq!(os.registered(), [target("Alt+X")]);
+    }
+
+    #[test]
+    fn unavailable_shows_its_reason_and_is_kept_for_the_screen() {
+        let os = FakeOs {
+            blocked: vec![target("Ctrl+Ctrl")],
+            ..FakeOs::default()
+        };
+        let binding = HotkeyBinding::default();
+        assert_eq!(
+            binding.rebind(&os, target("Ctrl+Ctrl"), "Ctrl+Ctrl"),
+            Err("sem permissão para ler o teclado".to_string())
+        );
+        assert_eq!(
+            binding.error().as_deref(),
+            Some("sem permissão para ler o teclado")
+        );
+        binding.rebind(&os, target("Alt+Z"), "Alt+Z").unwrap();
+        assert_eq!(binding.error(), None);
+    }
+
+    #[test]
+    fn combos_carry_their_kernel_key_codes() {
+        let Target::Shortcut(_, combo) = target("Ctrl+Shift+Space") else {
+            panic!("combinação");
+        };
+        assert_eq!(combo.key, 57);
+        assert!(combo.modifiers.ctrl && combo.modifiers.shift && !combo.modifiers.alt);
     }
 
     #[test]

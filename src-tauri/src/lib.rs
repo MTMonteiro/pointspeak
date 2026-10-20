@@ -19,6 +19,10 @@ pub mod dictation;
 mod double_tap;
 pub mod hud;
 pub mod injector;
+#[cfg(target_os = "linux")]
+mod linux_keys;
+#[cfg(target_os = "linux")]
+mod linux_uinput;
 pub mod models;
 pub mod onnx;
 pub mod onnx_parakeet;
@@ -56,6 +60,18 @@ pub struct AppState {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // Logger do `log` desde a abertura (antes só entrava com um modelo Whisper): avisos e erros, ou
+    // o nível de `POINTSPEAK_LOG`.
+    transcriber::install_logging();
+    // Antes do GTK: numa sessão Wayland as janelas vão para o XWayland, onde o HUD aparece sem
+    // tirar o foco do app em que a pessoa dita (`hud_layout::gtk_backend_override`).
+    #[cfg(target_os = "linux")]
+    if let Some(backend) =
+        pointspeak_core::hud_layout::gtk_backend_override(|name| std::env::var(name).ok())
+    {
+        std::env::set_var("GDK_BACKEND", backend);
+        eprintln!("[pointspeak] janelas no XWayland (GDK_BACKEND={backend})");
+    }
     tauri::Builder::default()
         // O atalho do config é registrado no `setup` (e trocado no `set_config`); só ele existe.
         .plugin(
@@ -90,6 +106,7 @@ pub fn run() {
             settings::start_mic_test,
             settings::stop_mic_test,
             shortcut::suspend_hotkey,
+            shortcut::hotkey_status,
             transcriber::load_transcriber,
             transcription_test::start_transcription_test,
             transcription_test::stop_transcription_test
@@ -113,6 +130,14 @@ pub fn run() {
             ));
 
             double_tap::init(handle);
+            #[cfg(target_os = "linux")]
+            linux_keys::init(handle);
+            // No Wayland a colagem é pelo teclado virtual: criado já, para o compositor
+            // reconhecê-lo antes do primeiro ditado.
+            #[cfg(target_os = "linux")]
+            if linux_keys::use_for_combos() {
+                linux_uinput::prepare();
+            }
             let config = app.state::<AppState>().config.lock().unwrap().clone();
             let backend = dictation::TauriBackend::new(handle.clone(), display);
             app.manage(dictation::spawn(

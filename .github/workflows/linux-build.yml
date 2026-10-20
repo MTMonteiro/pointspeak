@@ -1,0 +1,53 @@
+# Checks e pacote .deb no Linux a cada push numa branch (o main sai pela release). O .deb fica nos
+# artefatos do run (Actions → Linux build → Artifacts), para testar num Linux de verdade antes do
+# merge. Ubuntu 22.04: o .deb instala nas distros com glibc dessa versão em diante (24.04 inclusive).
+name: Linux build
+
+on:
+  push:
+    branches-ignore: [main]
+  workflow_dispatch:
+
+env:
+  # Mesmos valores do scripts/build-linux.sh.
+  GGML_NATIVE: "OFF"
+  GGML_OPENMP: "OFF"
+  GGML_AVX: "ON"
+  GGML_AVX2: "ON"
+  GGML_FMA: "ON"
+  GGML_F16C: "ON"
+
+jobs:
+  linux:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: linux-build
+      - run: ./scripts/setup-linux.sh
+      - run: npm ci --no-audit --no-fund
+      - name: Checks
+        run: |
+          npm run lint
+          npm test
+          npm run build
+          cargo fmt --all -- --check
+          cargo clippy --workspace --all-targets -- -D warnings
+          cargo test --workspace
+      - name: Pacote .deb
+        env:
+          POINTSPEAK_SKIP_APPIMAGE: "1"
+        run: ./scripts/build-linux.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: deb
+          path: target/release/bundle/deb/*.deb
+          if-no-files-found: error

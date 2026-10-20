@@ -187,6 +187,18 @@ pub fn monitor_index_at(cursor: PhysicalPoint, monitors: &[PhysicalRect]) -> Opt
         })
 }
 
+/// `GDK_BACKEND` que o app usa nas próprias janelas, se precisa mudar: numa sessão Wayland com
+/// XWayland (`DISPLAY`), `x11`. Uma janela Wayland nova ganha o foco no GNOME (o `accept_focus` do
+/// GTK só vale no X11), então o HUD tirava o foco do campo onde a pessoa ia ditar; no XWayland ele
+/// aparece sem foco. `None` se a pessoa escolheu um `GDK_BACKEND`, se
+/// `POINTSPEAK_NATIVE_WAYLAND=1` ou fora do Wayland.
+pub fn gtk_backend_override(get_env: impl Fn(&str) -> Option<String>) -> Option<&'static str> {
+    let set = |name: &str| get_env(name).is_some_and(|v| !v.trim().is_empty());
+    let native = get_env("POINTSPEAK_NATIVE_WAYLAND").is_some_and(|v| v.trim() == "1");
+    let wayland = DisplayServer::detect_from_env(&get_env) == DisplayServer::Wayland;
+    (wayland && set("DISPLAY") && !set("GDK_BACKEND") && !native).then_some("x11")
+}
+
 /// Servidor gráfico da sessão: decide se o HUD segue o cursor ou fica fixo.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum DisplayServer {
@@ -197,25 +209,19 @@ pub enum DisplayServer {
 }
 
 impl DisplayServer {
-    /// Detecta X11 × Wayland pelas variáveis de ambiente (Linux). `get_env` devolve o valor da
-    /// variável, se existir; recebe um closure para ser testável.
+    /// Detecta a sessão X11 × Wayland pelas variáveis de ambiente (Linux). `get_env` devolve o
+    /// valor da variável, se existir; recebe um closure para ser testável.
     ///
-    /// Ordem: `GDK_BACKEND` (o GTK do Tauri obedece a ela: `x11` força o XWayland, onde o cursor é
-    /// lido) → `WAYLAND_DISPLAY` não vazio → `XDG_SESSION_TYPE=wayland` → X11.
+    /// `WAYLAND_DISPLAY` não vazio ou `XDG_SESSION_TYPE=wayland` → Wayland; senão X11. O
+    /// `GDK_BACKEND` não conta: ele só diz onde ficam as janelas do app (numa sessão Wayland o app
+    /// usa o XWayland, [`gtk_backend_override`]), e a colagem (`wtype`), o atalho (`/dev/input`) e
+    /// o HUD fixo seguem a sessão.
     pub fn detect_from_env(get_env: impl Fn(&str) -> Option<String>) -> DisplayServer {
         let var = |name: &str| {
             get_env(name)
                 .map(|v| v.trim().to_ascii_lowercase())
                 .filter(|v| !v.is_empty())
         };
-        if let Some(backend) = var("GDK_BACKEND") {
-            // Lista em ordem de preferência (`wayland,x11`): vale o primeiro.
-            match backend.split(',').next().map(str::trim) {
-                Some("x11") => return DisplayServer::X11,
-                Some("wayland") => return DisplayServer::Wayland,
-                _ => {}
-            }
-        }
         if var("WAYLAND_DISPLAY").is_some() || var("XDG_SESSION_TYPE").as_deref() == Some("wayland")
         {
             DisplayServer::Wayland
@@ -224,7 +230,8 @@ impl DisplayServer {
         }
     }
 
-    /// O HUD acompanha o cursor (Windows e X11); no Wayland a posição é fixa.
+    /// O HUD acompanha o cursor (Windows e X11); no Wayland a posição é fixa (mesmo com as janelas
+    /// no XWayland, o cursor só é conhecido sobre janelas X11).
     pub fn follows_cursor(self) -> bool {
         self != DisplayServer::Wayland
     }
@@ -499,14 +506,43 @@ mod tests {
             DisplayServer::detect_from_env(env(&[("XDG_SESSION_TYPE", "Wayland")])),
             DisplayServer::Wayland
         );
+        // As janelas no XWayland (GDK_BACKEND=x11) não mudam a sessão.
         assert_eq!(
             DisplayServer::detect_from_env(env(&[
-                ("GDK_BACKEND", "wayland,x11"),
-                ("XDG_SESSION_TYPE", "x11")
+                ("GDK_BACKEND", "x11"),
+                ("WAYLAND_DISPLAY", "wayland-0"),
+                ("XDG_SESSION_TYPE", "wayland")
             ])),
             DisplayServer::Wayland
         );
         assert!(!DisplayServer::Wayland.follows_cursor());
+    }
+
+    #[test]
+    fn wayland_sessions_put_the_windows_on_xwayland() {
+        let wayland = [
+            ("WAYLAND_DISPLAY", "wayland-0"),
+            ("XDG_SESSION_TYPE", "wayland"),
+            ("DISPLAY", ":0"),
+        ];
+        assert_eq!(gtk_backend_override(env(&wayland)), Some("x11"));
+        // Sem XWayland (sem DISPLAY), a janela fica no Wayland: o GTK nem abriria.
+        assert_eq!(
+            gtk_backend_override(env(&[("WAYLAND_DISPLAY", "wayland-0")])),
+            None
+        );
+        // GDK_BACKEND escolhido pela pessoa e POINTSPEAK_NATIVE_WAYLAND=1 valem.
+        let mut chosen = wayland.to_vec();
+        chosen.push(("GDK_BACKEND", "wayland"));
+        assert_eq!(gtk_backend_override(env(&chosen)), None);
+        let mut native = wayland.to_vec();
+        native.push(("POINTSPEAK_NATIVE_WAYLAND", "1"));
+        assert_eq!(gtk_backend_override(env(&native)), None);
+        // X11: nada a mudar.
+        assert_eq!(
+            gtk_backend_override(env(&[("XDG_SESSION_TYPE", "x11"), ("DISPLAY", ":0")])),
+            None
+        );
     }
 
     #[test]
@@ -521,13 +557,8 @@ mod tests {
             DisplayServer::detect_from_env(env(&[("WAYLAND_DISPLAY", "")])),
             DisplayServer::X11
         );
-        // GDK_BACKEND=x11 numa sessão Wayland: o GTK usa o XWayland e o cursor pode ser lido.
         assert_eq!(
-            DisplayServer::detect_from_env(env(&[
-                ("GDK_BACKEND", "x11"),
-                ("WAYLAND_DISPLAY", "wayland-0"),
-                ("XDG_SESSION_TYPE", "wayland")
-            ])),
+            DisplayServer::detect_from_env(env(&[("GDK_BACKEND", "wayland")])),
             DisplayServer::X11
         );
         assert!(DisplayServer::X11.follows_cursor());

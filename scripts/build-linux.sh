@@ -69,7 +69,8 @@ fi
 
 # dpkg-deb -c lista "./usr/..." ou "usr/..." conforme a versão: normaliza para "usr/...".
 CONTENTS="$(dpkg-deb -c "$DEB" | awk '{print $6}' | sed 's|^\./||')"
-for file in usr/lib/PointSpeak/libonnxruntime.so usr/lib/PointSpeak/resources/silero_vad.onnx \
+for file in usr/lib/udev/rules.d/70-pointspeak-uinput.rules \
+  usr/lib/PointSpeak/libonnxruntime.so usr/lib/PointSpeak/resources/silero_vad.onnx \
   usr/lib/PointSpeak/licenses/onnxruntime-LICENSE.txt usr/bin/pointspeak; do
   if ! grep -Fx "$file" <<<"$CONTENTS" >/dev/null; then
     echo "build-linux.sh: $file não está no .deb" >&2

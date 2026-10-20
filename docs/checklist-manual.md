@@ -21,7 +21,7 @@ confira o hash do arquivo copiado: `sha256sum <arquivo>` no Linux, `Get-FileHash
   `Start-Process "$env:LOCALAPPDATA\PointSpeak\pointspeak.exe" -RedirectStandardError "$env:TEMP\pointspeak.log"`;
   depois leia com `Get-Content "$env:TEMP\pointspeak.log" -Wait`.
 - **Linux (dev, opcional):** `npm run build && cargo build -p pointspeak --release` e rode
-  `target/release/pointspeak` num terminal. No Wayland, instale `wtype` (ou `ydotool` com o `ydotoold` rodando).
+  `target/release/pointspeak` num terminal. No Wayland, o usuário precisa do grupo `input` (atalho e colagem).
 
 ## Ordem de execução
 
@@ -82,7 +82,7 @@ Abra um editor de texto (Bloco de Notas / gedit / Kate) com o cursor numa linha 
 | 4.2 | Copiar uma imagem (print), ditar, colar num editor de imagem | A imagem volta ao clipboard | ☐ | ☐ | ☐ |
 | 4.3 | Ditar num terminal (Windows Terminal / gnome-terminal / konsole) | O texto entra no prompt (Shift+Insert no Linux X11) | ☐ | ☐ | ☐ |
 | 4.4 | Ditar num navegador (campo de busca) | O texto entra no campo | ☐ | ☐ | ☐ |
-| 4.5 | Wayland sem `wtype`/`ydotool` | HUD mostra `Falha ao colar` por ~4 s; o clipboard original é restaurado | — | — | ☐ |
+| 4.5 | Wayland (GNOME), com o grupo `input` e sem `wtype`/`ydotool`: ditar num campo de texto de outro app | O texto é colado no campo (teclado virtual do app); o campo não perde o foco quando a pílula aparece; o clipboard original volta. Sem o grupo `input`: HUD `Falha ao colar` e o clipboard original é restaurado | — | — | ☐ |
 | 4.6 | Com o histórico do clipboard ligado (Win+V no Windows; Klipper/KDE ou outro gerenciador no Linux), ditar uma frase e abrir o histórico | A frase ditada não aparece no histórico (nem na sincronização na nuvem do Windows); o texto colado entra normalmente no app | ☐ | ☐ | ☐ |
 | 4.7 | **Windows, colagem com clipboard ocupado:** copie um texto qualquer (ex.: "texto antigo"), dite uma frase com o `large-v3-turbo` num navegador e num editor (VS Code/Notepad) | Entra a frase **ditada**, nunca o "texto antigo"; ~400 ms depois o clipboard volta ao "texto antigo" (cole num campo para conferir). Se o clipboard estiver travado por outro app, o HUD mostra `Falha ao colar` (nada é colado) e o clipboard volta ao "texto antigo" | ☐ | — | — |
 
@@ -111,7 +111,8 @@ Abra um editor de texto (Bloco de Notas / gedit / Kate) com o cursor numa linha 
 | 6.4 | Trocar o atalho para `Ctrl+Shift+Space` | O novo grava; `Alt+Z` não grava mais; tooltip `Pronto (Ctrl+Shift+Space)` | ☐ | ☐ | ☐ |
 | 6.5 | Trocar para um atalho já usado (ex.: um atalho global de outro app aberto) | Aviso `<atalho> já é usado por outro app ou pelo sistema. Escolha outra combinação.`; o atalho anterior continua valendo | ☐ | ☐ | ☐ |
 | 6.8 | Windows: Configurações → Atalho → `Alterar` e toque duas vezes rápido em `Alt`; depois, num editor de texto (ex.: Bloco de Notas), toque `Alt` duas vezes e segure o 2º toque enquanto fala | O atalho vira `Alt+Alt` (com a dica de segurar o 2º toque); o ditado grava enquanto o 2º toque fica apertado e cola ao soltar; a barra de menus do editor **não** fica ativada depois; Alt+Tab e outros atalhos com Alt continuam normais. Repita com `Ctrl+Ctrl` | ☐ | — | — |
-| 6.6 | Wayland: o atalho global funciona? | Anote: muitos compositores não deixam (limitação conhecida) | — | — | ☐ |
+| 6.9 | Linux: sem o grupo `input` (`groups` não lista `input`), escolha `Ctrl+Ctrl` em Atalho; no Wayland, também com `Alt+Z` | `set_config` recusa com o texto do grupo `input` (`sudo usermod -aG input $USER` …) e a seção Atalho mostra `O atalho não está funcionando.` com o mesmo texto. No X11, `Alt+Z` funciona sem o grupo | — | ☐ | ☐ |
+| 6.6 | Wayland: o atalho global funciona? (com o grupo `input`: `sudo usermod -aG input $USER` e entrar de novo) | `Alt+Z` (segurar e tocar) e `Ctrl+Ctrl` disparam o ditado com qualquer app em foco; um teclado USB ligado depois também funciona em até 3 s | — | — | ☐ |
 | 6.7 | `Sair` | O app fecha e o ícone some | ☐ | ☐ | ☐ |
 
 ## 7. Configurações
@@ -146,7 +147,7 @@ a CPU).
 | 8.6 | Linux: `./scripts/fetch-onnxruntime.sh linux` e rode com `ORT_DYLIB_PATH=$PWD/target/onnxruntime/linux-x64/libonnxruntime.so target/release/pointspeak` | OpenVINO `Nenhum dispositivo Intel compatível` e CUDA `Nenhuma GPU NVIDIA encontrada` (o pacote oficial só traz a CPU); sem erro de carregamento no terminal | — | ☐ | ☐ |
 | 8.6a | Linux com o .deb instalado (sem `ORT_DYLIB_PATH`): `dpkg -L point-speak \| grep -E 'onnxruntime\|silero'` e abra Configurações → Hardware | Lista `/usr/lib/PointSpeak/libonnxruntime.so`, `/usr/lib/PointSpeak/resources/silero_vad.onnx` e as licenças em `/usr/lib/PointSpeak/licenses/`; o ONNX Runtime CPU é detectado: OpenVINO `Nenhum dispositivo Intel compatível` e CUDA `Nenhuma GPU NVIDIA encontrada` (não `ONNX Runtime não encontrado`), CPU `Sempre disponível`; no terminal nenhum `ONNX Runtime não encontrado` | — | ☐ | ☐ |
 | 8.6b | Linux: rode o AppImage (sem `ORT_DYLIB_PATH`) e repita o 8.6a na seção Hardware | Mesmo resultado do 8.6a; `[pointspeak] Silero VAD carregado de /tmp/.mount_…/usr/lib/PointSpeak/resources/silero_vad.onnx` no terminal logo depois de abrir | — | ☐ | ☐ |
-| 8.6c | Linux Wayland com o .deb: `apt install` sem `--no-install-recommends` | `wtype` e `ydotool` instalados junto (Recommends) | — | — | ☐ |
+| 8.6c | Linux com o .deb: `ls -l /dev/uinput` logo depois de instalar | `crw-rw---- root input` (regra `70-pointspeak-uinput.rules` aplicada pelo `postinst`, sem reiniciar) | — | ☐ | ☐ |
 | 8.7 | **Silero VAD:** abra o app num terminal e confira a saída | `[pointspeak] Silero VAD carregado de …\resources\silero_vad.onnx` (Linux: com o `ORT_DYLIB_PATH` do 8.6); no Windows o arquivo fica em `resources\` na pasta de instalação e a licença em `licenses\silero_vad-LICENSE.txt` | ☐ | ☐ | ☐ |
 | 8.8 | Com o VAD ativo: Toggle, fale uma frase com pausas curtas entre as palavras e fique calado | Não para nas pausas curtas; para ~2,5 s (`silenceTimeoutMs`) depois da última palavra e cola | ☐ | ☐ | ☐ |
 | 8.9 | Com o VAD ativo: Toggle num ambiente com ruído contínuo (ventilador, música baixa sem voz) e não fale; pare com o atalho | HUD mostra `Nada foi ouvido` (o ruído não conta como fala); as barras do HUD continuam reagindo ao ruído | ☐ | ☐ | ☐ |
@@ -193,6 +194,6 @@ detalhes estão em `docs/tecnologia.md` (**Segurança e privacidade**).
 | 9.3 | **`ORT_DYLIB_PATH`:** quem controla as variáveis de ambiente da sua conta pode fazer o app carregar outra biblioteca ONNX Runtime (a variável existe para desenvolvimento; caminho relativo é ignorado) | Nada a testar; risco pressupõe acesso à sua conta | ☐ |
 | 9.4 | **Instalação por usuário (Windows):** a pasta `%LOCALAPPDATA%\PointSpeak` é gravável pelo próprio usuário, como em todo app instalado por usuário; as DLLs do ONNX Runtime são carregadas dela | Confira em 8.1 que as DLLs estão nessa pasta | ☐ |
 | 9.5 | **CPU com AVX2 obrigatória:** em CPU sem AVX2/FMA o app fecha ao transcrever (o .exe e os pacotes Linux são compilados para AVX2) | Se tiver um PC antigo, anote o comportamento | ☐ |
-| 9.6 | **Wayland:** o HUD fica fixo no centro-inferior (5.3), o atalho global depende do compositor (6.6) e a colagem depende de `wtype`/`ydotool` (4.5) | Itens 4.5, 5.3 e 6.6 | ☐ |
+| 9.6 | **Wayland:** o HUD fica fixo no centro-inferior (5.3), o atalho global e a colagem pedem o grupo `input` (6.6, 6.9 e 4.5) | Itens 4.5, 5.3 e 6.6 | ☐ |
 | 9.7 | **Pasta de logs vazia:** os logs `[pointspeak] …` saem só no terminal (stderr); `Sobre → Abrir pasta de logs` abre a pasta, mas o app ainda não grava arquivo de log | Abra o app por um terminal (Windows: **Logs no Windows**, no começo) quando precisar do motivo de um erro | ☐ |
 | 9.8 | **Callback de áudio aloca memória** por bloco (conversão de formato): não bloqueia a captura, mas não é livre de alocação | Nada a testar; só desempenho em máquina muito carregada | ☐ |

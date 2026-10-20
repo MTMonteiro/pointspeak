@@ -141,8 +141,10 @@ impl Injector {
         if text.trim().is_empty() {
             return Ok(());
         }
+        log::debug!("injector: abrindo o clipboard");
         let clipboard = open_clipboard(&mut self.clipboard)?;
         let keys = paste_keys_for(&focused_app(display));
+        log::debug!("injector: colando com {keys:?}");
         let enigo = &mut self.enigo;
         let os = TargetOs::current();
         let outcome = paste_preserving_clipboard_retrying(
@@ -184,11 +186,18 @@ fn paste(enigo: &mut Option<Enigo>, display: DisplayServer, keys: PasteKeys) -> 
     for method in paste_strategy(display) {
         let result = match method {
             PasteMethod::Enigo => enigo_paste(enigo, keys),
+            #[cfg(target_os = "linux")]
+            PasteMethod::Uinput => crate::linux_uinput::paste(keys),
+            #[cfg(not(target_os = "linux"))]
+            PasteMethod::Uinput => Err("uinput: só no Linux".into()),
             PasteMethod::Wtype => run_tool("wtype", wtype_args(keys)),
             PasteMethod::Ydotool => run_tool("ydotool", ydotool_args(keys)),
         };
         match result {
-            Ok(()) => return Ok(()),
+            Ok(()) => {
+                log::info!("colagem: {method:?}");
+                return Ok(());
+            }
             Err(err) => {
                 log::debug!("injector: {method:?} falhou: {err}");
                 failures.push(err);
@@ -295,11 +304,17 @@ fn clipboard_error(err: arboard::Error) -> ClipboardError {
 
 impl ClipboardLike for ArboardClipboard<'_> {
     fn get_text(&mut self) -> Option<String> {
-        self.0.get_text().ok()
+        log::debug!("injector: lendo o texto do clipboard");
+        let text = self.0.get_text().ok();
+        log::debug!("injector: texto do clipboard lido ({})", text.is_some());
+        text
     }
 
     fn set_text(&mut self, text: &str) -> Result<(), ClipboardError> {
-        private(self.0.set()).text(text).map_err(clipboard_error)
+        log::debug!("injector: gravando o texto no clipboard");
+        let result = private(self.0.set()).text(text).map_err(clipboard_error);
+        log::debug!("injector: texto gravado ({})", result.is_ok());
+        result
     }
 
     fn clear(&mut self) -> Result<(), ClipboardError> {
@@ -307,7 +322,10 @@ impl ClipboardLike for ArboardClipboard<'_> {
     }
 
     fn get_image(&mut self) -> Option<ClipboardImage> {
-        let image = self.0.get_image().ok()?;
+        log::debug!("injector: lendo a imagem do clipboard");
+        let image = self.0.get_image();
+        log::debug!("injector: imagem do clipboard lida ({})", image.is_ok());
+        let image = image.ok()?;
         Some(ClipboardImage {
             width: image.width,
             height: image.height,

@@ -857,12 +857,13 @@ pub fn transcribe<R: Runtime>(
     Ok(text)
 }
 
-/// Repassa avisos e erros do `log` (whisper.cpp/GGML) ao stderr.
+/// Repassa o `log` (whisper.cpp/GGML e o app) ao stderr: avisos e erros, ou o nível de
+/// `POINTSPEAK_LOG` (`info`, `debug`) para diagnóstico.
 struct StderrLogger;
 
 impl log::Log for StderrLogger {
     fn enabled(&self, metadata: &log::Metadata) -> bool {
-        metadata.level() <= log::Level::Warn
+        metadata.level() <= log::max_level()
     }
 
     fn log(&self, record: &log::Record) {
@@ -886,7 +887,11 @@ static LOGGING: Once = Once::new();
 pub fn install_logging() {
     LOGGING.call_once(|| {
         if log::set_logger(&LOGGER).is_ok() {
-            log::set_max_level(log::LevelFilter::Warn);
+            let level = std::env::var("POINTSPEAK_LOG")
+                .ok()
+                .and_then(|v| v.parse::<log::LevelFilter>().ok())
+                .unwrap_or(log::LevelFilter::Warn);
+            log::set_max_level(level);
         }
         whisper_rs::install_logging_hooks();
     });

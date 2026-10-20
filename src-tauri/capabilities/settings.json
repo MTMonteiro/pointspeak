@@ -11,6 +11,7 @@
     "allow-download-model",
     "allow-get-config",
     "allow-get-engine-status",
+    "allow-hotkey-status",
     "allow-list-backends",
     "allow-list-microphones",
     "allow-list-models",

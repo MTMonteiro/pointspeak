@@ -64,6 +64,8 @@ windows = { version = "0.62", features = [
 # Injector no X11: janela ativa (`_NET_ACTIVE_WINDOW`) → `WM_CLASS`. Mesma versão que o enigo usa.
 [target.'cfg(target_os = "linux")'.dependencies]
 x11rb = "0.13"
+# Colagem no Wayland pelo teclado virtual (`linux_uinput.rs`): `ioctl` do /dev/uinput.
+libc = "0.2"
 
 [dev-dependencies]
 hound = "3"

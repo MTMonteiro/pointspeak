@@ -1,0 +1,3 @@
+# PointSpeak: o grupo `input` pode usar o /dev/uinput (teclado virtual da colagem no Wayland).
+# O mesmo grupo já lê o teclado para o atalho global (/dev/input/event*).
+KERNEL=="uinput", SUBSYSTEM=="misc", GROUP="input", MODE="0660", OPTIONS+="static_node=uinput"
