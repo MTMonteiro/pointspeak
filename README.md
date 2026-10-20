@@ -80,7 +80,8 @@ a transcrição roda (Automático, NPU/GPU via DirectML no Windows, ou CPU). Pel
   quem compila o projeto pode gerar uma versão para CPUs antigas (veja `docs/tecnologia.md`).
 - **"O Windows protegeu o computador" ao instalar:** é o SmartScreen, porque o instalador não é assinado.
   Use **Mais informações** → **Executar assim mesmo**.
-- **No Wayland a pílula não segue o cursor:** é esperado. O Wayland não informa a posição do cursor a outros
+- **No Wayland a pílula não segue o cursor:** é esperado (no Wayland as janelas do PointSpeak rodam pelo
+  XWayland, para a pílula não tirar o foco do campo onde você dita). O Wayland não informa a posição do cursor a outros
   apps, então a pílula fica fixa no centro, embaixo da tela.
 - **No Wayland o texto não é colado (`Falha ao colar`):** instale o `wtype` (`sudo apt install wtype`) ou o
   `ydotool` com o `ydotoold` ativo.
