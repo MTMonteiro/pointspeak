@@ -3,8 +3,9 @@ use pointspeak_core::engine::{
     load_with_fallback, EngineKind, EnginePlan, FallbackReason, GgmlGpu, OnnxLoadError,
 };
 use pointspeak_core::injector::{
-    paste_keys_for, paste_preserving_clipboard, paste_strategy, wtype_args, ydotool_args,
-    ClipboardError, ClipboardLike, FocusedApp, PasteError, PasteKeys, PasteMethod, PasteOutcome,
+    paste_key_events, paste_keys_for, paste_preserving_clipboard, paste_strategy, wtype_args,
+    ydotool_args, ClipboardError, ClipboardLike, FocusedApp, PasteError, PasteKeys, PasteMethod,
+    PasteOutcome,
 };
 use pointspeak_core::models::{
     download_verified, part_path, DownloadError, Expected, ModelVariant,
@@ -311,6 +312,16 @@ fn empty_text_skips_clipboard_and_wayland_methods_have_terminal_key_sequences() 
     );
     assert_eq!(
         paste_strategy(pointspeak_core::hud_layout::DisplayServer::Wayland),
-        [PasteMethod::Wtype, PasteMethod::Ydotool, PasteMethod::Enigo]
+        [
+            PasteMethod::Uinput,
+            PasteMethod::Wtype,
+            PasteMethod::Ydotool,
+            PasteMethod::Enigo
+        ]
+    );
+    // O teclado virtual manda o Shift+Insert dos terminais pelos mesmos códigos do ydotool.
+    assert_eq!(
+        paste_key_events(PasteKeys::ShiftInsert),
+        [(42, 1), (110, 1), (110, 0), (42, 0)]
     );
 }
