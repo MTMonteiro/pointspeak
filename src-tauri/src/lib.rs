@@ -60,6 +60,9 @@ pub struct AppState {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // Logger do `log` desde a abertura (antes só entrava com um modelo Whisper): avisos e erros, ou
+    // o nível de `POINTSPEAK_LOG`.
+    transcriber::install_logging();
     // Antes do GTK: numa sessão Wayland as janelas vão para o XWayland, onde o HUD aparece sem
     // tirar o foco do app em que a pessoa dita (`hud_layout::gtk_backend_override`).
     #[cfg(target_os = "linux")]
