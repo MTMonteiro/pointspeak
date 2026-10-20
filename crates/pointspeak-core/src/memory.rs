@@ -18,6 +18,8 @@
 //! | OpenVINO com o encoder pré-compilado (EPContext) | — | — | 3,3 GB |
 //! | DirectML (GPU) | 822 MB | 1,3 GB | 3,5 GB |
 //!
+//! Parakeet TDT 0.6B v3 INT8 (640 MB de arquivos): 746 MB na CPU EP e 969 MB no DirectML.
+//!
 //! [`load_peak_bytes`] é uma reta (fixo + fator × arquivos) que fica acima de todos os pontos.
 
 use crate::config::Backend;
@@ -37,6 +39,7 @@ pub fn load_peak_bytes(
 ) -> u64 {
     let (fixed_mib, factor_tenths) = match (kind, backend) {
         (EngineKind::WhisperCpp, _) => (200, 12),
+        (EngineKind::Parakeet, _) => (400, 10),
         (EngineKind::Onnx, Backend::Directml) => (1024, 14),
         (EngineKind::Onnx, Backend::Openvino) if precompiled => (1024, 14),
         (EngineKind::Onnx, Backend::Openvino) => (400, 45),
@@ -94,6 +97,8 @@ mod tests {
             (EngineKind::Onnx, Backend::Directml, false, 128, 822),
             (EngineKind::Onnx, Backend::Directml, false, 234, 1_270),
             (EngineKind::Onnx, Backend::Directml, false, 1_848, 3_463),
+            (EngineKind::Parakeet, Backend::Cpu, false, 640, 746),
+            (EngineKind::Parakeet, Backend::Directml, false, 640, 969),
         ];
         for (kind, backend, precompiled, files, peak) in measured {
             let estimate = load_peak_bytes(kind, backend, files * MB, precompiled) / MB;

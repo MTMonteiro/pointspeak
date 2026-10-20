@@ -21,6 +21,7 @@ pub mod hud;
 pub mod injector;
 pub mod models;
 pub mod onnx;
+pub mod onnx_parakeet;
 pub mod onnx_whisper;
 pub mod settings;
 pub mod shortcut;

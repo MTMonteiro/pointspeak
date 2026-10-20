@@ -18,7 +18,7 @@ pub const MAX_RECORDING_RANGE_SECS: RangeInclusive<u32> = 1..=3_600;
 /// Faixa aceita para liberar o modelo da memória sem uso (0 = nunca).
 pub const UNLOAD_IDLE_RANGE_MINS: RangeInclusive<u32> = 0..=1440;
 
-/// Modelos Whisper suportados (reutilizado pelo Model Manager).
+/// Modelos de transcrição suportados (reutilizado pelo Model Manager): os Whisper e o Parakeet.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum ModelId {
     #[serde(rename = "tiny")]
@@ -29,15 +29,48 @@ pub enum ModelId {
     Small,
     #[serde(rename = "large-v3-turbo")]
     LargeV3Turbo,
+    /// NVIDIA Parakeet TDT 0.6B v3 (INT8): outra arquitetura (FastConformer + TDT), só em ONNX.
+    #[serde(rename = "parakeet-tdt-0.6b-v3")]
+    ParakeetTdtV3,
+}
+
+/// Família do modelo: decide a engine e o formato no disco.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ModelFamily {
+    /// Whisper: ggml (whisper.cpp) na CPU e ONNX (encoder + decoders) no DirectML/OpenVINO.
+    Whisper,
+    /// Parakeet TDT: um formato só (ONNX INT8), na CPU EP ou no DirectML.
+    Parakeet,
 }
 
 impl ModelId {
-    pub const ALL: [ModelId; 4] = [
+    pub const ALL: [ModelId; 5] = [
+        ModelId::Tiny,
+        ModelId::Base,
+        ModelId::Small,
+        ModelId::LargeV3Turbo,
+        ModelId::ParakeetTdtV3,
+    ];
+
+    /// Modelos Whisper (os que têm as duas variantes, ggml e ONNX).
+    pub const WHISPER: [ModelId; 4] = [
         ModelId::Tiny,
         ModelId::Base,
         ModelId::Small,
         ModelId::LargeV3Turbo,
     ];
+
+    pub fn family(self) -> ModelFamily {
+        match self {
+            ModelId::ParakeetTdtV3 => ModelFamily::Parakeet,
+            _ => ModelFamily::Whisper,
+        }
+    }
+
+    /// O modelo escolhe o idioma sozinho (a opção de idioma não vale para ele).
+    pub fn detects_language(self) -> bool {
+        self.family() == ModelFamily::Parakeet
+    }
 
     /// Nome usado no JSON e na interface.
     pub fn as_str(self) -> &'static str {
@@ -46,6 +79,7 @@ impl ModelId {
             ModelId::Base => "base",
             ModelId::Small => "small",
             ModelId::LargeV3Turbo => "large-v3-turbo",
+            ModelId::ParakeetTdtV3 => "parakeet-tdt-0.6b-v3",
         }
     }
 }

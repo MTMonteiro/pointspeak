@@ -13,6 +13,7 @@ pub mod load_progress;
 pub mod memory;
 pub mod models;
 pub mod onnx_runtime;
+pub mod parakeet;
 pub mod settings;
 pub mod transcriber;
 pub mod transcription_test;

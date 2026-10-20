@@ -9,6 +9,9 @@
 //! (`transcriber::model_variant`): estado, tamanho e progresso são os dela, somados de todos os
 //! arquivos. O contrato JSON é o mesmo; trocar de backend reemite a lista ([`emit_all`]). O
 //! `usedBytes` soma as duas variantes (é o espaço ocupado na pasta).
+//!
+//! O Parakeet só tem a pasta ONNX: em qualquer lista, as ações e o estado dele são os da variante
+//! `Onnx` ([`variant_of`], `ModelVariant::for_model`).
 
 use std::collections::HashMap;
 use std::fs;
@@ -82,6 +85,13 @@ impl Registries {
     ) -> ModelsOverview {
         let mut overview = self.get(variant).overview(active, dir);
         overview.used_bytes = self.ggml.used_bytes() + self.onnx.used_bytes();
+        // Modelos de formato único (Parakeet): o estado é o da variante em que eles existem.
+        for entry in &mut overview.models {
+            let own = variant.for_model(entry.info.id);
+            if own != variant {
+                entry.status = self.get(own).state(entry.info.id, active);
+            }
+        }
         overview
     }
 }
@@ -138,6 +148,11 @@ fn current_variant<R: Runtime>(app: &AppHandle<R>) -> ModelVariant {
     transcriber::model_variant(app, &current_config(app))
 }
 
+/// Variante das ações sobre `id` na lista atual (o Parakeet é sempre `Onnx`).
+fn variant_of<R: Runtime>(app: &AppHandle<R>, id: ModelId) -> ModelVariant {
+    current_variant(app).for_model(id)
+}
+
 fn dir_or_err<R: Runtime>(app: &AppHandle<R>) -> Result<PathBuf, String> {
     models_dir(app).map_err(|_| "Não foi possível ler a pasta dos modelos".to_string())
 }
@@ -145,7 +160,7 @@ fn dir_or_err<R: Runtime>(app: &AppHandle<R>) -> Result<PathBuf, String> {
 /// Emite o estado de `id` na `variant`, se ela é a que a lista mostra agora (o download de uma
 /// variante que saiu da tela segue sem avisar).
 fn emit_state<R: Runtime>(app: &AppHandle<R>, id: ModelId, variant: ModelVariant) {
-    if current_variant(app) != variant {
+    if variant_of(app, id) != variant {
         return;
     }
     let active = active_model(&app.state::<AppState>());
@@ -165,7 +180,7 @@ pub fn emit_all<R: Runtime>(app: &AppHandle<R>) {
     }
     let variant = current_variant(app);
     for info in &CATALOG {
-        emit_state(app, info.id, variant);
+        emit_state(app, info.id, variant.for_model(info.id));
     }
 }
 
@@ -188,7 +203,7 @@ pub fn list_models(app: AppHandle) -> Result<ModelsOverview, String> {
 #[tauri::command(async)]
 pub fn download_model(app: AppHandle, id: ModelId) -> Result<(), String> {
     let dir = dir_or_err(&app)?;
-    let variant = current_variant(&app);
+    let variant = variant_of(&app, id);
     let models = app.state::<ModelManager>();
     models
         .registries()
@@ -219,7 +234,7 @@ pub fn download_model(app: AppHandle, id: ModelId) -> Result<(), String> {
             emit_state(&handle, id, variant);
             // A variante que faltava ao modelo ativo chegou: recarrega (sai do fallback).
             let active = active_model(&handle.state::<AppState>());
-            if result.is_ok() && active == Some(id) && current_variant(&handle) == variant {
+            if result.is_ok() && active == Some(id) && variant_of(&handle, id) == variant {
                 transcriber::unload(&handle);
                 crate::dictation::reload_model(&handle);
             }
@@ -289,15 +304,14 @@ fn fetch<R: Runtime>(
         }
         ModelVariant::Onnx => {
             // A pasta `.part` de uma tentativa que caiu é reaproveitada (só baixa o que falta).
-            let info = id.onnx_info();
-            let files = info.files();
+            let files = id.onnx_files();
             let items: Vec<DownloadItem<'_>> = files.iter().map(|f| f.item()).collect();
             download_verified_files(
                 &items,
                 &dest,
                 cancel,
                 Instant::now,
-                |i| get(&client, &info.url(&files[i])),
+                |i| get(&client, &id.onnx_url(&files[i])),
                 on_event,
             )
         }
@@ -307,7 +321,7 @@ fn fetch<R: Runtime>(
 /// Comando Tauri: pede o cancelamento; o download para no próximo bloco e apaga o `.part`.
 #[tauri::command(async)]
 pub fn cancel_download(app: AppHandle, id: ModelId) -> Result<(), String> {
-    let variant = current_variant(&app);
+    let variant = variant_of(&app, id);
     match app.state::<ModelManager>().cancels().get(&(variant, id)) {
         Some(flag) => {
             flag.store(true, Ordering::Relaxed);
@@ -325,7 +339,7 @@ pub fn remove_files(dir: &Path, id: ModelId, variant: ModelVariant) -> io::Resul
         _ => Ok(()),
     };
     let path = variant.local_path(id, dir);
-    match variant {
+    match variant.for_model(id) {
         ModelVariant::Ggml => ignore_missing(fs::remove_file(path)),
         ModelVariant::Onnx => {
             ignore_missing(fs::remove_dir_all(part_path(&path)))?;
@@ -339,7 +353,7 @@ pub fn remove_files(dir: &Path, id: ModelId, variant: ModelVariant) -> io::Resul
 #[tauri::command(async)]
 pub fn remove_model(app: AppHandle, id: ModelId) -> Result<(), String> {
     let dir = dir_or_err(&app)?;
-    let variant = current_variant(&app);
+    let variant = variant_of(&app, id);
     let active = active_model(&app.state::<AppState>());
     {
         let models = app.state::<ModelManager>();
@@ -364,7 +378,7 @@ pub fn set_active_model(
     state: State<'_, AppState>,
     id: ModelId,
 ) -> Result<AppConfig, String> {
-    let variant = current_variant(&app);
+    let variant = variant_of(&app, id);
     app.state::<ModelManager>()
         .registries()
         .get(variant)
@@ -388,7 +402,7 @@ pub fn set_active_model(
         (previous, next)
     };
     if let Some(old) = previous.filter(|old| *old != id) {
-        emit_state(&app, old, variant);
+        emit_state(&app, old, variant_of(&app, old));
     }
     emit_state(&app, id, variant);
     if previous != Some(id) {
@@ -479,5 +493,42 @@ mod tests {
             serde_json::to_value(&ggml).unwrap()["models"][0]["state"],
             "active"
         );
+    }
+
+    #[test]
+    fn parakeet_shows_its_one_folder_in_both_lists() {
+        let dir = tempfile::tempdir().unwrap();
+        let id = ModelId::ParakeetTdtV3;
+        let folder = ModelVariant::Onnx.local_path(id, dir.path());
+        fs::create_dir(&folder).unwrap();
+        for file in id.onnx_files() {
+            fs::File::create(folder.join(file.file_name()))
+                .unwrap()
+                .set_len(file.size_bytes)
+                .unwrap();
+        }
+        let mut registries = Registries::default();
+        registries.rescan(dir.path());
+        for variant in VARIANTS {
+            let overview = registries.overview(variant, Some(id), String::new());
+            let entry = overview
+                .models
+                .iter()
+                .find(|entry| entry.info.id == id)
+                .unwrap();
+            assert_eq!(
+                entry.info.file_name, "parakeet-tdt-0.6b-v3-int8",
+                "{variant:?}"
+            );
+            assert_eq!(
+                serde_json::to_value(entry).unwrap()["state"],
+                "active",
+                "{variant:?}"
+            );
+            // Conta uma vez só no espaço usado.
+            assert_eq!(overview.used_bytes, id.info().size_bytes, "{variant:?}");
+        }
+        remove_files(dir.path(), id, ModelVariant::Ggml).unwrap();
+        assert!(!folder.exists());
     }
 }

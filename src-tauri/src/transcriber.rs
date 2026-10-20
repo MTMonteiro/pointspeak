@@ -4,6 +4,8 @@
 //!   features `cuda`/`vulkan`, GPU.
 //! - ONNX Runtime ([`OrtWhisperTranscriber`], `onnx_whisper.rs`) com a variante ONNX: DirectML,
 //!   OpenVINO e CUDA.
+//! - Parakeet TDT ([`ParakeetTranscriber`], `onnx_parakeet.rs`) no ONNX Runtime: a CPU EP ou o
+//!   DirectML, em qualquer backend escolhido ([`load_parakeet`]; os outros caem para a CPU EP).
 //!
 //! [`ensure_loaded`] monta o plano do config ([`plan`]: backend efetivo, variantes no disco) e
 //! carrega pela regra do núcleo (`pointspeak_core::engine::load_with_fallback`): se a ONNX não dá
@@ -41,29 +43,32 @@ use std::path::{Path, PathBuf};
 use std::sync::{MutexGuard, Once};
 use std::time::{Duration, Instant};
 
-use pointspeak_core::config::{AppConfig, Backend, ModelId};
+use pointspeak_core::config::{AppConfig, Backend, ModelFamily, ModelId};
 use pointspeak_core::dictation::{Input, ModelStatus};
 use pointspeak_core::engine::{
-    load_with_fallback, runtime_label, sanity_checked, EngineKind, EnginePlan, EngineRuntime,
-    GgmlGpu, OnnxLoadError,
+    load_with_fallback, runtime_label, sanity_checked, DmlDevice, EngineKind, EnginePlan,
+    EngineRuntime, GgmlGpu, OnnxLoadError,
 };
 use pointspeak_core::load_progress::{
     compile_estimate, LoadProgress, LoadProgressPayload, LoadStage,
 };
 use pointspeak_core::memory::{load_peak_bytes, memory_shortage};
-use pointspeak_core::models::OnnxModelInfo;
 use pointspeak_core::models::{onnx_model_ready, ModelVariant};
+use pointspeak_core::models::{OnnxModelInfo, PARAKEET_TDT_V3};
 use pointspeak_core::transcriber::{
     self, join_segments, language_code, EngineKey, EngineSlot, TranscribeError, TranscribeOptions,
     Transcriber,
 };
-use pointspeak_core::whisper_onnx::sanity::{probe_verdict, ProbeReference};
+use pointspeak_core::whisper_onnx::sanity::{
+    correlation, probe_verdict, ProbeReference, MIN_CORRELATION,
+};
 use tauri::{AppHandle, Manager, Runtime};
 use whisper_rs::{
     FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters, WhisperState,
 };
 
 use crate::dictation::DictationHandle;
+use crate::onnx_parakeet::ParakeetTranscriber;
 use crate::onnx_whisper::{cpu_probe_reference, openvino_precompiled, OrtWhisperTranscriber};
 use crate::{models, onnx, settings, AppState};
 
@@ -326,12 +331,28 @@ fn load_engine(
     // Referência da CPU para a verificação de sanidade: calculada uma vez por carga (NPU e GPU
     // usam a mesma); `None` dentro = a CPU não rodou e a verificação fica de fora.
     let mut reference: Option<Option<ProbeReference>> = None;
+    let mut parakeet_reference: Option<Option<Vec<f32>>> = None;
     let loaded = load_with_fallback(
         plan,
         &onnx_dir,
         |backend, device| {
             let environment = onnx::environment()
                 .ok_or_else(|| OnnxLoadError::Provider("ONNX Runtime não carregado".into()))?;
+            if plan.model.family() == ModelFamily::Parakeet {
+                return load_parakeet(
+                    environment,
+                    &ParakeetLoad {
+                        plan,
+                        models_dir: dir,
+                        model_dir: &onnx_dir,
+                        verified,
+                        on_stage,
+                    },
+                    backend,
+                    device,
+                    &mut parakeet_reference,
+                );
+            }
             let info = plan.model.onnx_info();
             let label = runtime_label(backend, device);
             let mut engine = OrtWhisperTranscriber::load_with_stages(
@@ -344,10 +365,7 @@ fn load_engine(
             )
             .inspect_err(|e| eprintln!("[pointspeak] engine ONNX ({label}): {e:?}"))?;
             if sanity_checked(backend) {
-                let library_size = onnx::library()
-                    .and_then(|path| fs::metadata(path).ok())
-                    .map(|meta| meta.len());
-                let key = verification_key(plan.model, &label, library_size);
+                let key = verification_key(plan.model, &label, onnx_library_size());
                 if verified.contains(&key) {
                     // Já aprovado: só aquece (e, na NPU, compila agora, não no 1º ditado).
                     on_stage(LoadStage::WarmUp);
@@ -402,6 +420,103 @@ fn load_engine(
     log::info!("transcrição: {summary}");
     eprintln!("[pointspeak] transcrição: {summary}");
     Ok((loaded.engine, runtime))
+}
+
+/// Tamanho do `onnxruntime.dll` carregado (entra na chave da verificação).
+fn onnx_library_size() -> Option<u64> {
+    onnx::library()
+        .and_then(|path| fs::metadata(path).ok())
+        .map(|meta| meta.len())
+}
+
+/// O que a carga do Parakeet precisa do [`load_engine`].
+struct ParakeetLoad<'a> {
+    plan: &'a EnginePlan,
+    models_dir: &'a Path,
+    model_dir: &'a Path,
+    verified: &'a VerifiedDevices,
+    on_stage: &'a dyn Fn(LoadStage),
+}
+
+/// Engine Parakeet no `backend`/`device`. No DirectML, a 1ª carga em cada dispositivo compara a
+/// saída do encoder na entrada fixa com a da CPU EP (`reference`, calculada uma vez por carga) e
+/// grava a aprovação no [`VerifiedDevices`]; divergência ou NaN contam como falha (o próximo
+/// dispositivo ou a CPU assume). Sempre termina com o aquecimento.
+fn load_parakeet(
+    environment: &ort::environment::Environment,
+    load: &ParakeetLoad<'_>,
+    backend: Backend,
+    device: Option<DmlDevice>,
+    reference: &mut Option<Option<Vec<f32>>>,
+) -> Result<Box<dyn Transcriber>, OnnxLoadError> {
+    let label = runtime_label(backend, device);
+    let log_error = |e: &OnnxLoadError| eprintln!("[pointspeak] engine Parakeet ({label}): {e:?}");
+    let mut engine = ParakeetTranscriber::load_with_stages(
+        environment,
+        load.model_dir,
+        &PARAKEET_TDT_V3,
+        backend,
+        device,
+        load.on_stage,
+    )
+    .inspect_err(log_error)?;
+    let key = verification_key(load.plan.model, &label, onnx_library_size());
+    if sanity_checked(backend) && !load.verified.contains(&key) {
+        (load.on_stage)(LoadStage::Verify);
+        let expected = reference.get_or_insert_with(|| {
+            if let Some(warning) = memory_warning(
+                EngineKind::Parakeet,
+                Backend::Cpu,
+                load.plan.model,
+                ModelVariant::Onnx,
+                load.models_dir,
+            ) {
+                eprintln!("[pointspeak] verificação de sanidade ({label}) fica para a próxima carga: {warning}");
+                return None;
+            }
+            ParakeetTranscriber::load(
+                environment,
+                load.model_dir,
+                &PARAKEET_TDT_V3,
+                Backend::Cpu,
+                None,
+            )
+            .map_err(|e| format!("{e:?}"))
+            .and_then(|mut cpu| cpu.probe_encoder().map_err(|e| e.to_string()))
+            .inspect_err(|e| {
+                eprintln!("[pointspeak] verificação de sanidade sem referência da CPU: {e}");
+            })
+            .ok()
+        });
+        if let Some(expected) = expected.as_ref() {
+            let got = engine
+                .probe_encoder()
+                .map_err(|e| OnnxLoadError::Model(format!("verificação de sanidade: {e}")))?;
+            let score = if got.len() == expected.len() && got.iter().all(|v| v.is_finite()) {
+                correlation(expected, &got)
+            } else {
+                0.0
+            };
+            eprintln!(
+                "[pointspeak] verificação de sanidade ({label}): encoder, correlação {score:.4}"
+            );
+            if score < MIN_CORRELATION {
+                let e = OnnxLoadError::Diverged(format!(
+                    "saída do encoder diverge da CPU (correlação {score:.2}, mínimo {MIN_CORRELATION:.2})"
+                ));
+                log_error(&e);
+                return Err(e);
+            }
+            load.verified.insert(key);
+        }
+    }
+    (load.on_stage)(LoadStage::WarmUp);
+    engine.warm_up().map_err(|e| {
+        let e = OnnxLoadError::Model(format!("aquecimento: {e}"));
+        log_error(&e);
+        e
+    })?;
+    Ok(Box::new(engine))
 }
 
 /// Referência da CPU para a verificação de sanidade; se a CPU EP não roda o modelo, a verificação

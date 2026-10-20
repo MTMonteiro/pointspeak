@@ -147,6 +147,16 @@
         "sha256": "1fc70f774d38eb169993ac391eea357ef47c88757ef72ee5943879b7e8e2bc69",
         "sizeBytes": 1624555275,
         "state": "failed"
+      },
+      {
+        "description": "Rápido até na CPU; idioma automático (25 línguas)",
+        "displaySize": "640 MB",
+        "fileName": "parakeet-tdt-0.6b-v3-int8",
+        "id": "parakeet-tdt-0.6b-v3",
+        "recommended": false,
+        "sha256": "",
+        "sizeBytes": 670619706,
+        "state": "notDownloaded"
       }
     ],
     "usedBytes": 77691713
@@ -196,6 +206,16 @@
         "sha256": "",
         "sizeBytes": 1937412905,
         "state": "failed"
+      },
+      {
+        "description": "Rápido até na CPU; idioma automático (25 línguas)",
+        "displaySize": "640 MB",
+        "fileName": "parakeet-tdt-0.6b-v3-int8",
+        "id": "parakeet-tdt-0.6b-v3",
+        "recommended": false,
+        "sha256": "",
+        "sizeBytes": 670619706,
+        "state": "notDownloaded"
       }
     ],
     "usedBytes": 134146253

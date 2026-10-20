@@ -16,6 +16,10 @@
 //! fica sempre na CPU EP: na NPU Intel (Core Ultra X7 358H) ele derruba o processo no 1º passo e na
 //! GPU recompila a cada tamanho novo de entrada.
 //!
+//! Parakeet ([`EngineKind::Parakeet`]): o modelo decide a engine, não o backend. Ele roda no ONNX
+//! Runtime na CPU EP ou no DirectML (NPU, depois GPU) e segue o mesmo caminho do ONNX acima: se o
+//! backend não roda o Parakeet (OpenVINO, CUDA, Vulkan) ou falha, cai para a CPU EP (não há ggml).
+//!
 //! O `src-tauri` só entrega o que o disco e a detecção informam ([`EnginePlan`]) e os dois
 //! carregadores; a decisão e os textos ficam aqui.
 
@@ -23,7 +27,7 @@ use std::path::Path;
 
 use serde::Serialize;
 
-use crate::config::{Backend, ModelId};
+use crate::config::{Backend, ModelFamily, ModelId};
 use crate::models::ModelVariant;
 use crate::settings::{effective_backend, BackendOption, REASON_NOT_INCLUDED};
 use crate::transcriber::{EngineKey, TranscribeError};
@@ -38,6 +42,8 @@ pub enum EngineKind {
     WhisperCpp,
     /// `ort` (ONNX Runtime) com a variante ONNX (encoder + decoder).
     Onnx,
+    /// `ort` com o Parakeet TDT (pré-processador, encoder e decoder + joint), em qualquer backend.
+    Parakeet,
 }
 
 impl EngineKind {
@@ -45,7 +51,7 @@ impl EngineKind {
     pub fn variant(self) -> ModelVariant {
         match self {
             EngineKind::WhisperCpp => ModelVariant::Ggml,
-            EngineKind::Onnx => ModelVariant::Onnx,
+            EngineKind::Onnx | EngineKind::Parakeet => ModelVariant::Onnx,
         }
     }
 
@@ -54,6 +60,7 @@ impl EngineKind {
         match self {
             EngineKind::WhisperCpp => "whisper.cpp",
             EngineKind::Onnx => "ONNX Runtime",
+            EngineKind::Parakeet => "ONNX Runtime (Parakeet)",
         }
     }
 }
@@ -305,9 +312,12 @@ impl EnginePlan {
         }
     }
 
-    /// Engine do backend efetivo, antes de qualquer fallback.
+    /// Engine do backend efetivo, antes de qualquer fallback (o Parakeet tem engine própria).
     pub fn kind(&self) -> EngineKind {
-        engine_kind(self.backend, self.gpu)
+        match self.model.family() {
+            ModelFamily::Whisper => engine_kind(self.backend, self.gpu),
+            ModelFamily::Parakeet => EngineKind::Parakeet,
+        }
     }
 
     /// Variante que o Model Manager mostra para este plano.
@@ -426,7 +436,7 @@ pub fn load_with_fallback<E>(
                     engine,
                     runtime: EngineRuntime {
                         backend: Backend::Cpu,
-                        kind: EngineKind::Onnx,
+                        kind,
                         fallback: Some(reason),
                         device: None,
                         device_fallback: None,

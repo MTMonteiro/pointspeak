@@ -72,6 +72,13 @@ describe("Settings", () => {
     expect(await screen.findByText("Salvo")).toBeInTheDocument();
   });
 
+  it("avisa que o Parakeet detecta o idioma sozinho", async () => {
+    mockTauri({ get_config: () => ({ ...CONFIG, model: "parakeet-tdt-0.6b-v3" }) });
+    render(<Settings />);
+    fireEvent.click(await screen.findByRole("link", { name: "Idioma" }));
+    expect(await screen.findByText(/O Parakeet detecta o idioma sozinho/)).toBeInTheDocument();
+  });
+
   it("reverte uma mudança recusada e liga o erro ao campo", async () => {
     const message = "Configuração recusada pelo backend.";
     mockTauri({ set_config: () => Promise.reject(message) });

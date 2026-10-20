@@ -310,7 +310,7 @@ fn open_session(
 
 /// Builder com as opções do app e a EP do backend. No OpenVINO, `cache_dir` = pasta do modelo
 /// cujo [`OPENVINO_CACHE_DIR`] guarda o cache de compilação (`None` = sem cache).
-fn session_builder(
+pub(crate) fn session_builder(
     environment: &Environment,
     backend: Backend,
     device: DmlDevice,
@@ -339,7 +339,7 @@ fn session_builder(
     Ok(builder)
 }
 
-fn commit(mut builder: SessionBuilder, model: &Path) -> Result<Session, OnnxLoadError> {
+pub(crate) fn commit(mut builder: SessionBuilder, model: &Path) -> Result<Session, OnnxLoadError> {
     let name = model.file_name().unwrap_or_default().to_string_lossy();
     builder
         .commit_from_file(model)

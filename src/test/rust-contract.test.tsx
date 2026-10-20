@@ -35,7 +35,7 @@ function isOneOf(value: unknown, allowed: readonly string[]): value is string {
   return typeof value === "string" && allowed.includes(value);
 }
 
-const MODEL_IDS = ["tiny", "base", "small", "large-v3-turbo"] as const;
+const MODEL_IDS = ["tiny", "base", "small", "large-v3-turbo", "parakeet-tdt-0.6b-v3"] as const;
 const BACKENDS = ["auto", "cpu", "directml", "openvino", "cuda", "vulkan"] as const;
 const STATES = ["idle", "recording", "transcribing", "success", "error"] as const;
 

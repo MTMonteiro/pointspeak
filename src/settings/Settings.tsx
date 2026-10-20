@@ -573,6 +573,11 @@ export function Settings() {
           <section className="settings-section" id="idioma" aria-labelledby="section-idioma" hidden={activeSection !== "idioma"}>
             <h2 id="section-idioma">Idioma</h2>
             <p className="settings-lead">Em que idioma você dita.</p>
+            {value.model === "parakeet-tdt-0.6b-v3" && (
+              <Callout tone="info">
+                <p>O Parakeet detecta o idioma sozinho (25 línguas, entre elas português e inglês): esta opção vale só para os modelos Whisper.</p>
+              </Callout>
+            )}
             <Segmented<Language>
               name="language"
               legend="Idioma do ditado"

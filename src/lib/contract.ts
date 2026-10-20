@@ -16,7 +16,7 @@ export type AudioLevelPayload = {
 };
 
 /** Mirrors the Rust `AppConfig` serde contract (`rename_all = "camelCase"`). */
-export type ModelId = "tiny" | "base" | "small" | "large-v3-turbo";
+export type ModelId = "tiny" | "base" | "small" | "large-v3-turbo" | "parakeet-tdt-0.6b-v3";
 export type Language = "pt" | "en" | "auto";
 export type HotkeyMode = "pushToTalk" | "toggle";
 export type Backend = "auto" | "cpu" | "directml" | "openvino" | "cuda" | "vulkan";

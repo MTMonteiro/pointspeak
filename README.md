@@ -52,7 +52,9 @@ chmod +x PointSpeak_1.0.0_amd64.AppImage
 1. Abra o PointSpeak. **Nenhuma janela abre**: ele fica no ícone da bandeja do sistema (perto do relógio).
 2. Clique no ícone (ou abra o menu dele) → **Configurações…**.
 3. Em **Modelos**, baixe um modelo e clique em **Usar este**. O `base` (142 MB) é um bom começo; o `small`
-   acerta mais e é mais lento; o `tiny` é o mais rápido.
+   acerta mais e é mais lento; o `tiny` é o mais rápido. O **Parakeet TDT 0.6B v3** (640 MB) é rápido até na
+   CPU (cerca de 0,7 s para 14 s de fala) e detecta o idioma sozinho (25 línguas); o `large-v3-turbo` erra
+   menos em nomes e termos raros, mas pede NPU/GPU.
 4. Em **Idioma**, escolha Português, Inglês ou Automático. Em **Saída**, escolha se o texto é colado onde está o cursor (padrão) ou só copiado para a área de transferência, para você colar com Ctrl+V (o conteúdo anterior dela é substituído).
 5. Feche as Configurações. Quando a bandeja mostrar `Pronto (Alt+Z)`, clique onde quer escrever,
    **segure `Alt+Z`**, fale e solte. O texto é colado ali.
@@ -122,6 +124,15 @@ a transcrição roda (Automático, NPU/GPU via DirectML no Windows, ou CPU). Pel
   `Shift`. No modo **Segurar para falar**, segure o segundo toque enquanto fala. Só no Windows.
 - **O atalho não faz nada:** veja se o ditado está pausado (menu da bandeja) ou se outro app já usa a mesma
   combinação; troque em **Configurações → Atalho**.
+
+## Créditos dos modelos
+
+- **Whisper** (OpenAI, licença MIT): ggml do [whisper.cpp](https://huggingface.co/ggerganov/whisper.cpp) e
+  ONNX do [onnx-community](https://huggingface.co/onnx-community).
+- **Parakeet TDT 0.6B v3** © NVIDIA, licença [CC-BY-4.0](https://creativecommons.org/licenses/by/4.0/)
+  ([modelo original](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3)). O PointSpeak baixa, sem
+  modificações, o export ONNX INT8 de [istupakov/parakeet-tdt-0.6b-v3-onnx](https://huggingface.co/istupakov/parakeet-tdt-0.6b-v3-onnx);
+  a decodificação segue a da biblioteca [onnx-asr](https://github.com/istupakov/onnx-asr).
 
 ## Documentação
 
