@@ -72,6 +72,14 @@ describe("Settings", () => {
     expect(await screen.findByText("Salvo")).toBeInTheDocument();
   });
 
+  it("mostra por que o atalho não está funcionando", async () => {
+    mockTauri({ hotkey_status: () => "rode `sudo usermod -aG input $USER`" });
+    render(<Settings />);
+    fireEvent.click(await screen.findByRole("link", { name: "Atalho" }));
+    expect(await screen.findByText("O atalho não está funcionando.")).toBeInTheDocument();
+    expect(screen.getByText(/rode `sudo usermod -aG input \$USER`/)).toBeInTheDocument();
+  });
+
   it("avisa que o Parakeet detecta o idioma sozinho", async () => {
     mockTauri({ get_config: () => ({ ...CONFIG, model: "parakeet-tdt-0.6b-v3" }) });
     render(<Settings />);

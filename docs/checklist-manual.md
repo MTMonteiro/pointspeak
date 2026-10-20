@@ -111,7 +111,8 @@ Abra um editor de texto (Bloco de Notas / gedit / Kate) com o cursor numa linha 
 | 6.4 | Trocar o atalho para `Ctrl+Shift+Space` | O novo grava; `Alt+Z` não grava mais; tooltip `Pronto (Ctrl+Shift+Space)` | ☐ | ☐ | ☐ |
 | 6.5 | Trocar para um atalho já usado (ex.: um atalho global de outro app aberto) | Aviso `<atalho> já é usado por outro app ou pelo sistema. Escolha outra combinação.`; o atalho anterior continua valendo | ☐ | ☐ | ☐ |
 | 6.8 | Windows: Configurações → Atalho → `Alterar` e toque duas vezes rápido em `Alt`; depois, num editor de texto (ex.: Bloco de Notas), toque `Alt` duas vezes e segure o 2º toque enquanto fala | O atalho vira `Alt+Alt` (com a dica de segurar o 2º toque); o ditado grava enquanto o 2º toque fica apertado e cola ao soltar; a barra de menus do editor **não** fica ativada depois; Alt+Tab e outros atalhos com Alt continuam normais. Repita com `Ctrl+Ctrl` | ☐ | — | — |
-| 6.6 | Wayland: o atalho global funciona? | Anote: muitos compositores não deixam (limitação conhecida) | — | — | ☐ |
+| 6.9 | Linux: sem o grupo `input` (`groups` não lista `input`), escolha `Ctrl+Ctrl` em Atalho; no Wayland, também com `Alt+Z` | `set_config` recusa com o texto do grupo `input` (`sudo usermod -aG input $USER` …) e a seção Atalho mostra `O atalho não está funcionando.` com o mesmo texto. No X11, `Alt+Z` funciona sem o grupo | — | ☐ | ☐ |
+| 6.6 | Wayland: o atalho global funciona? (com o grupo `input`: `sudo usermod -aG input $USER` e entrar de novo) | `Alt+Z` (segurar e tocar) e `Ctrl+Ctrl` disparam o ditado com qualquer app em foco; um teclado USB ligado depois também funciona em até 3 s | — | — | ☐ |
 | 6.7 | `Sair` | O app fecha e o ícone some | ☐ | ☐ | ☐ |
 
 ## 7. Configurações

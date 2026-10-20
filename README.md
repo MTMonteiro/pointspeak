@@ -83,8 +83,11 @@ a transcrição roda (Automático, NPU/GPU via DirectML no Windows, ou CPU). Pel
 - **No Wayland a pílula não segue o cursor:** é esperado. O Wayland não informa a posição do cursor a outros
   apps, então a pílula fica fixa no centro, embaixo da tela.
 - **No Wayland o texto não é colado (`Falha ao colar`):** instale o `wtype` (`sudo apt install wtype`) ou o
-  `ydotool` com o `ydotoold` ativo. Alguns compositores também não deixam apps registrarem atalho global;
-  nesse caso o atalho não funciona.
+  `ydotool` com o `ydotoold` ativo.
+- **No Wayland (Ubuntu 22.04 ou mais novo, Fedora…) o atalho não faz nada, ou o `Ctrl+Ctrl` no Linux:** o
+  PointSpeak lê o teclado direto do sistema (`/dev/input`), o que pede o grupo `input`. Rode
+  `sudo usermod -aG input $USER`, saia da sessão e entre de novo. A seção **Atalho** avisa quando falta isso.
+  O grupo deixa os apps do seu usuário lerem o teclado; o PointSpeak só reage às teclas do atalho.
 - **A aceleração (DirectML) não ligou e está usando a CPU:** o ditado continua funcionando na CPU. O motivo
   aparece em **Configurações → Hardware**, no aviso "A aceleração … não iniciou. O PointSpeak está usando
   a CPU. Motivo: …" (por exemplo, a variante ONNX do modelo ainda não foi baixada: com DirectML escolhido,

@@ -5,6 +5,7 @@ const COMMANDS: &[&str] = &[
     "download_model",
     "get_config",
     "get_engine_status",
+    "hotkey_status",
     "list_backends",
     "list_microphones",
     "list_models",

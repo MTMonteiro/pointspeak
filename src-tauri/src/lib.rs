@@ -19,6 +19,8 @@ pub mod dictation;
 mod double_tap;
 pub mod hud;
 pub mod injector;
+#[cfg(target_os = "linux")]
+mod linux_keys;
 pub mod models;
 pub mod onnx;
 pub mod onnx_parakeet;
@@ -90,6 +92,7 @@ pub fn run() {
             settings::start_mic_test,
             settings::stop_mic_test,
             shortcut::suspend_hotkey,
+            shortcut::hotkey_status,
             transcriber::load_transcriber,
             transcription_test::start_transcription_test,
             transcription_test::stop_transcription_test
@@ -113,6 +116,8 @@ pub fn run() {
             ));
 
             double_tap::init(handle);
+            #[cfg(target_os = "linux")]
+            linux_keys::init(handle);
             let config = app.state::<AppState>().config.lock().unwrap().clone();
             let backend = dictation::TauriBackend::new(handle.clone(), display);
             app.manage(dictation::spawn(

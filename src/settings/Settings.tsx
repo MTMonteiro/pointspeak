@@ -208,6 +208,8 @@ export function Settings() {
   const [transcriptionBusy, setTranscriptionBusy] = useState(false);
   const [captureActive, setCaptureActive] = useState(false);
   const [captureError, setCaptureError] = useState<CaptureError>();
+  // Why the saved hotkey is not working (e.g. Linux without the `input` group); `hotkey_status`.
+  const [hotkeyStatus, setHotkeyStatus] = useState<string | null>(null);
   const [logError, setLogError] = useState<string>();
   const micTestRunningRef = useRef(false);
   const hotkeySuspendedRef = useRef(false);
@@ -494,6 +496,20 @@ export function Settings() {
     }
   };
 
+  const savedHotkey = config?.hotkey;
+  useEffect(() => {
+    if (activeSection !== "atalho" || captureActive) return;
+    let disposed = false;
+    void invoke<string | null>("hotkey_status")
+      .then((status) => {
+        if (!disposed) setHotkeyStatus(status ?? null);
+      })
+      .catch(() => undefined);
+    return () => {
+      disposed = true;
+    };
+  }, [activeSection, captureActive, savedHotkey]);
+
   const fieldHotkeyError = captureError ?? (errors.hotkey ? {
     message: errors.hotkey,
     tone: errors.hotkey.includes("já é usado") ? "warning" as const : "error" as const,
@@ -615,6 +631,11 @@ export function Settings() {
           <section className="settings-section" id="atalho" aria-labelledby="section-atalho" hidden={activeSection !== "atalho"}>
             <h2 id="section-atalho">Atalho</h2>
             <p className="settings-lead">A combinação de teclas que liga o ditado em qualquer app.</p>
+            {hotkeyStatus && !captureActive && !errors.hotkey && (
+              <Callout tone="warning">
+                <p><strong>O atalho não está funcionando.</strong> {hotkeyStatus}</p>
+              </Callout>
+            )}
             <HotkeySection
               config={value}
               ready={config !== null}
