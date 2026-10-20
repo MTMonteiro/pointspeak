@@ -1,17 +1,22 @@
 //! Engine Whisper no ONNX Runtime (`ort`) atrás do trait `Transcriber` do núcleo.
 //!
 //! Lê a variante ONNX do modelo (`onnx-<id>/`: `encoder_model_fp16.onnx`,
-//! `decoder_model_merged_fp16.onnx`, `vocab.json`, `added_tokens.json`) e cria as duas sessões
-//! com a execution provider do backend efetivo: DirectML (`DmlExecutionProvider`, no dispositivo
+//! `decoder_model_merged_fp16.onnx`, `decoder_with_past_model_fp16.onnx`, `vocab.json`,
+//! `added_tokens.json`) e cria as três sessões com a execution provider do backend efetivo: DirectML (`DmlExecutionProvider`, no dispositivo
 //! pedido: NPU ou GPU, na ordem do núcleo, `engine::DmlDevice::ORDER`), OpenVINO ou CUDA. A CPU EP
 //! do ONNX Runtime fica sempre por baixo e roda o que a EP não suporta. O log-mel, os tokens e a decodificação gulosa vêm do núcleo
 //! (`pointspeak_core::whisper_onnx`); aqui só entram as sessões e o KV cache.
 //!
-//! KV cache do `decoder_model_merged`: no primeiro passo de um trecho `use_cache_branch` é falso e
-//! os `past_key_values.N.{decoder,encoder}.{key,value}` vão vazios (dimensão 0); a partir do
-//! segundo, `use_cache_branch` é verdadeiro, só os tokens novos entram em `input_ids` e os
-//! `present.*` do passo anterior viram os `past_key_values.*`. Os do encoder (atenção cruzada)
-//! saem no primeiro passo e não mudam no resto do trecho.
+//! KV cache: o primeiro passo de um trecho roda no `decoder_model_merged` com `use_cache_branch`
+//! falso e os `past_key_values.N.{decoder,encoder}.{key,value}` vazios (dimensão 0); ele devolve
+//! os `present.*` de todas as partes. Os passos seguintes rodam no `decoder_with_past_model`: só os
+//! tokens novos em `input_ids` e o cache como `past_key_values.*`; ele devolve só os
+//! `present.N.decoder.*`, e os do encoder (atenção cruzada) ficam os do primeiro passo.
+//!
+//! O ramo `use_cache_branch` verdadeiro do `merged` (nó `If`) não é usado: no DirectML ele devolve
+//! logits com NaN e valores ~1e38 (Arc B390, ONNX Runtime 1.24.1/1.24.4, DirectML 1.15.4, em
+//! qualquer nível de otimização), enquanto o `with_past` dá correlação 1,0000 com a CPU a ~24 ms
+//! por passo no large-v3-turbo.
 //!
 //! Verificação de sanidade (DirectML): [`cpu_probe_reference`] roda a entrada fixa do núcleo
 //! (`whisper_onnx::sanity`) no mesmo modelo na CPU e [`OrtWhisperTranscriber::probe_report`] compara o
@@ -19,7 +24,7 @@
 //! dispositivo é o `transcriber.rs`.
 
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use ort::environment::Environment;
 use ort::ep::{self, ExecutionProvider};
@@ -27,7 +32,8 @@ use ort::session::builder::{GraphOptimizationLevel, SessionBuilder};
 use ort::session::{Session, SessionInputValue};
 use ort::value::{DynValue, Tensor, ValueType};
 use pointspeak_core::config::Backend;
-use pointspeak_core::engine::{DmlDevice, OnnxLoadError};
+use pointspeak_core::engine::{runtime_label, DmlDevice, OnnxLoadError};
+use pointspeak_core::load_progress::LoadStage;
 use pointspeak_core::models::OnnxModelInfo;
 use pointspeak_core::transcriber::{TranscribeError, TranscribeOptions, Transcriber};
 use pointspeak_core::whisper_onnx::mel::N_FRAMES;
@@ -67,14 +73,42 @@ pub fn directml(device: DmlDevice) -> ep::DirectML {
         .with_performance_preference(ep::directml::PerformancePreference::HighPerformance)
 }
 
+/// Onde o decoder abre quando o encoder está no `backend`, na ordem de tentativa: o próprio backend,
+/// menos no OpenVINO. Lá o decoder vai para a GPU pelo DirectML e, se ela não abrir,
+/// para a CPU EP: na NPU Intel o decoder derruba o processo no 1º passo e na GPU do OpenVINO ele
+/// recompila a cada tamanho de entrada. Medido no large-v3-turbo (Core Ultra X7 358H, áudio de
+/// 13,7 s): encoder na NPU ~0,3 s; o decoder leva ~7,8 s na CPU.
+fn decoder_targets(backend: Backend, device: DmlDevice) -> Vec<(Backend, DmlDevice)> {
+    match backend {
+        Backend::Openvino => vec![(Backend::Directml, DmlDevice::Gpu), (Backend::Cpu, device)],
+        other => vec![(other, device)],
+    }
+}
+
+/// Pasta do OpenVINO dentro da pasta do modelo (sai junto quando o modelo é apagado ou baixado de
+/// novo): o encoder pré-compilado ([`open_openvino_encoder`]) ou, se ele não pôde ser gerado, o
+/// cache de compilação. A primeira compilação do large-v3-turbo na NPU leva ~14–17 min.
+const OPENVINO_CACHE_DIR: &str = "openvino-cache";
+
+/// OpenVINO do app no `device` (`device_type` `NPU` ou `GPU`). A detecção (`onnx.rs`) usa a mesma
+/// configuração.
+pub fn openvino(device: DmlDevice) -> ep::OpenVINO {
+    ep::OpenVINO::default().with_device_type(device.label())
+}
+
 /// Engine Whisper ONNX carregada (encoder + decoder + vocabulário).
 pub struct OrtWhisperTranscriber {
     encoder: Session,
+    /// `decoder_model_merged`: o 1º passo de cada trecho.
     decoder: Session,
+    /// `decoder_with_past_model`: os passos seguintes, com o KV cache.
+    decoder_past: Session,
     vocab: WhisperVocab,
     log_mel: LogMel,
     dims: CacheDims,
     backend: Backend,
+    /// Onde os dois decoders abriram ([`decoder_targets`]).
+    decoder_backend: Backend,
 }
 
 /// Forma do KV cache do decoder, lida das entradas do modelo.
@@ -87,7 +121,8 @@ struct CacheDims {
 
 impl OrtWhisperTranscriber {
     /// Abre a pasta `dir` do modelo `info` com a EP de `backend` (`Cpu` = só a CPU EP). No DirectML,
-    /// `device` escolhe o dispositivo (sem ele, a GPU) e o encoder e o decoder abrem nele.
+    /// `device` escolhe o dispositivo (sem ele, a GPU) e o encoder e o decoder abrem nele; no
+    /// OpenVINO, só o encoder (o decoder segue [`decoder_targets`]).
     ///
     /// Falha no registro da EP → [`OnnxLoadError::Provider`]; arquivo, vocabulário ou sessão que
     /// não abrem → [`OnnxLoadError::Model`].
@@ -97,6 +132,19 @@ impl OrtWhisperTranscriber {
         info: &OnnxModelInfo,
         backend: Backend,
         device: Option<DmlDevice>,
+    ) -> Result<Self, OnnxLoadError> {
+        Self::load_with_stages(environment, dir, info, backend, device, &|_| {})
+    }
+
+    /// [`load`](Self::load) avisando cada etapa em `on_stage` (encoder, decoder), para o
+    /// progresso da carga.
+    pub fn load_with_stages(
+        environment: &Environment,
+        dir: &Path,
+        info: &OnnxModelInfo,
+        backend: Backend,
+        device: Option<DmlDevice>,
+        on_stage: &dyn Fn(LoadStage),
     ) -> Result<Self, OnnxLoadError> {
         let read = |name: &str| {
             fs::read_to_string(dir.join(name))
@@ -108,23 +156,57 @@ impl OrtWhisperTranscriber {
         )
         .map_err(|e| OnnxLoadError::Model(e.to_string()))?;
         let device = device.unwrap_or(DmlDevice::Gpu);
-        let open = |file: &str| open_session(environment, backend, device, &dir.join(file));
-        let encoder = open(info.encoder.file_name())?;
-        let decoder = open(info.decoder.file_name())?;
+        on_stage(LoadStage::Encoder);
+        let encoder = if backend == Backend::Openvino {
+            open_openvino_encoder(
+                environment,
+                device,
+                dir,
+                info.encoder.file_name(),
+                info.n_mels,
+            )?
+        } else {
+            open_session(environment, backend, device, dir, info.encoder.file_name())?
+        };
+        on_stage(LoadStage::Decoder);
+        let (decoder, decoder_past, decoder_backend) =
+            open_decoders(environment, backend, device, dir, info)?;
         let dims = cache_dims(&decoder).map_err(OnnxLoadError::Model)?;
         Ok(Self {
             encoder,
             decoder,
+            decoder_past,
             vocab,
             log_mel: LogMel::new(info.n_mels),
             dims,
             backend,
+            decoder_backend,
         })
+    }
+
+    /// Onde o decoder desta engine roda (no OpenVINO, DirectML ou CPU).
+    pub fn decoder_backend(&self) -> Backend {
+        self.decoder_backend
     }
 
     /// Backend da EP desta engine.
     pub fn backend(&self) -> Backend {
         self.backend
+    }
+
+    /// Aquecimento: o encoder e 2 passos do decoder (sem e com KV cache) na entrada fixa da
+    /// verificação. Faz o dispositivo preparar tudo na carga (a NPU compila o encoder na 1ª
+    /// inferência; o DirectML, os shaders), e não no 1º ditado. A saída é descartada.
+    pub fn warm_up(&mut self) -> Result<(), TranscribeError> {
+        let (mut model, log_mel, vocab) = self.parts();
+        let language = vocab.language_token("en").unwrap_or(vocab.languages()[0].0);
+        let features = log_mel.compute(&sanity::probe_signal());
+        let mut step = model.encode(&features)?;
+        let mut history = vocab.initial_tokens(language).to_vec();
+        step.next_logits(&history)?;
+        history.push(vocab.special().end_of_text);
+        step.next_logits(&history)?;
+        Ok(())
     }
 
     /// Compara esta engine com a `reference` na entrada fixa ([`sanity::probe_report`]).
@@ -140,6 +222,7 @@ impl OrtWhisperTranscriber {
         let model = OrtModel {
             encoder: &mut self.encoder,
             decoder: &mut self.decoder,
+            decoder_past: &mut self.decoder_past,
             dims: self.dims,
             n_mels: self.log_mel.n_mels(),
         };
@@ -182,13 +265,57 @@ impl Transcriber for OrtWhisperTranscriber {
     }
 }
 
-/// Sessão com a EP do backend (no DirectML, no `device`); a CPU EP do ONNX Runtime fica por baixo.
+/// Sessões dos dois decoders (merged e with past) no primeiro alvo de [`decoder_targets`] em que
+/// as duas abrem; o erro é o do último.
+fn open_decoders(
+    environment: &Environment,
+    backend: Backend,
+    device: DmlDevice,
+    dir: &Path,
+    info: &OnnxModelInfo,
+) -> Result<(Session, Session, Backend), OnnxLoadError> {
+    let mut last = None;
+    for (target, device) in decoder_targets(backend, device) {
+        let open = |file: &str| open_session(environment, target, device, dir, file);
+        let opened = open(info.decoder.file_name())
+            .and_then(|merged| Ok((merged, open(info.decoder_with_past.file_name())?)));
+        match opened {
+            Ok((merged, past)) => return Ok((merged, past, target)),
+            Err(e) => {
+                if target != backend {
+                    eprintln!(
+                        "[pointspeak] decoder em {}: {e:?}",
+                        runtime_label(target, Some(device))
+                    );
+                }
+                last = Some(e);
+            }
+        }
+    }
+    Err(last.expect("decoder_targets nunca é vazio"))
+}
+
+/// Sessão do arquivo `file` da pasta `dir` com a EP do backend (no DirectML e no OpenVINO, no
+/// `device`); a CPU EP do ONNX Runtime fica por baixo.
 fn open_session(
     environment: &Environment,
     backend: Backend,
     device: DmlDevice,
-    model: &Path,
+    dir: &Path,
+    file: &str,
 ) -> Result<Session, OnnxLoadError> {
+    let builder = session_builder(environment, backend, device, Some(dir))?;
+    commit(builder, &dir.join(file))
+}
+
+/// Builder com as opções do app e a EP do backend. No OpenVINO, `cache_dir` = pasta do modelo
+/// cujo [`OPENVINO_CACHE_DIR`] guarda o cache de compilação (`None` = sem cache).
+pub(crate) fn session_builder(
+    environment: &Environment,
+    backend: Backend,
+    device: DmlDevice,
+    cache_dir: Option<&Path>,
+) -> Result<SessionBuilder, OnnxLoadError> {
     let model_err = |e: ort::Error<SessionBuilder>| OnnxLoadError::Model(e.to_string());
     let mut builder = Session::builder(environment)
         .map_err(|e| OnnxLoadError::Model(e.to_string()))?
@@ -208,7 +335,11 @@ fn open_session(
             .with_parallel_execution(false)
             .map_err(provider_err)?;
     }
-    register_provider(&mut builder, backend, device)?;
+    register_provider(&mut builder, backend, device, cache_dir)?;
+    Ok(builder)
+}
+
+pub(crate) fn commit(mut builder: SessionBuilder, model: &Path) -> Result<Session, OnnxLoadError> {
     let name = model.file_name().unwrap_or_default().to_string_lossy();
     builder
         .commit_from_file(model)
@@ -219,13 +350,145 @@ fn register_provider(
     builder: &mut SessionBuilder,
     backend: Backend,
     device: DmlDevice,
+    cache_dir: Option<&Path>,
 ) -> Result<(), OnnxLoadError> {
     let provider = |e: ort::Error| OnnxLoadError::Provider(e.to_string());
     match backend {
         Backend::Directml => directml(device).register(builder).map_err(provider),
-        Backend::Openvino => ep::OpenVINO::default().register(builder).map_err(provider),
+        Backend::Openvino => {
+            let mut ep = openvino(device);
+            if let Some(dir) = cache_dir {
+                ep = ep.with_cache_dir(dir.join(OPENVINO_CACHE_DIR).display());
+            }
+            ep.register(builder).map_err(provider)
+        }
         Backend::Cuda => ep::CUDA::default().register(builder).map_err(provider),
         Backend::Auto | Backend::Cpu | Backend::Vulkan => Ok(()),
+    }
+}
+
+/// Encoder pré-compilado do OpenVINO no `device` (modelo EPContext): `<cache>/encoder_<npu|gpu>.onnx`,
+/// um ONNX de um nó que aponta o blob compilado ao lado (`…_OpenVINOExecutionProvider.bin`).
+fn openvino_context_path(dir: &Path, device: DmlDevice) -> PathBuf {
+    dir.join(OPENVINO_CACHE_DIR)
+        .join(format!("encoder_{}.onnx", device.label().to_lowercase()))
+}
+
+/// Algum encoder pré-compilado do OpenVINO na pasta `dir` do modelo: a carga lê só o blob (pico
+/// de RAM bem menor, `pointspeak_core::memory`).
+pub fn openvino_precompiled(dir: &Path) -> bool {
+    DmlDevice::ORDER
+        .iter()
+        .any(|&device| openvino_context_path(dir, device).is_file())
+}
+
+/// Encoder no OpenVINO pelo modelo pré-compilado (EPContext). Sem ele, compila o `file` com a
+/// entrada de tamanho fixo (`[1, n_mels, 3000]`: a NPU só exporta modelos estáticos, e os exports
+/// do tiny/base/small deixam as três dimensões livres) e grava o EPContext para as próximas cargas; o cache de compilação antigo sai (o EPContext o substitui). Um EPContext que
+/// não abre (ex.: driver novo) é apagado e gerado de novo; se a geração falha, abre como antes, com
+/// o cache de compilação.
+fn open_openvino_encoder(
+    environment: &Environment,
+    device: DmlDevice,
+    dir: &Path,
+    file: &str,
+    n_mels: usize,
+) -> Result<Session, OnnxLoadError> {
+    let context = openvino_context_path(dir, device);
+    let label = runtime_label(Backend::Openvino, Some(device));
+    if context.is_file() {
+        let builder = session_builder(environment, Backend::Openvino, device, None)?;
+        match commit(builder, &context) {
+            Ok(session) => return Ok(session),
+            Err(e) => {
+                eprintln!(
+                    "[pointspeak] encoder pré-compilado ({label}) não abriu, gerando de novo: {e:?}"
+                );
+                remove_openvino_context(&context);
+            }
+        }
+    }
+    match export_openvino_context(environment, device, dir, file, n_mels, &context) {
+        Ok(session) => {
+            remove_compile_cache(dir);
+            eprintln!(
+                "[pointspeak] encoder pré-compilado ({label}) gravado em {}",
+                context.display()
+            );
+            Ok(session)
+        }
+        Err(e) => {
+            eprintln!("[pointspeak] encoder pré-compilado ({label}) não foi gerado: {e:?}");
+            remove_openvino_context(&context);
+            open_session(environment, Backend::Openvino, device, dir, file)
+        }
+    }
+}
+
+fn export_openvino_context(
+    environment: &Environment,
+    device: DmlDevice,
+    dir: &Path,
+    file: &str,
+    n_mels: usize,
+    context: &Path,
+) -> Result<Session, OnnxLoadError> {
+    if let Some(parent) = context.parent() {
+        fs::create_dir_all(parent).map_err(|e| OnnxLoadError::Model(e.to_string()))?;
+    }
+    let model_err = |e: ort::Error<SessionBuilder>| OnnxLoadError::Model(e.to_string());
+    let builder = session_builder(environment, Backend::Openvino, device, None)?
+        .with_dimension_override("batch_size", 1)
+        .map_err(model_err)?
+        .with_dimension_override("feature_size", n_mels as i64)
+        .map_err(model_err)?
+        .with_dimension_override("encoder_sequence_length", N_FRAMES as i64)
+        .map_err(model_err)?
+        .with_config_entry("ep.context_enable", "1")
+        .map_err(model_err)?
+        .with_config_entry("ep.context_embed_mode", "0")
+        .map_err(model_err)?
+        .with_config_entry("ep.context_file_path", context.display().to_string())
+        .map_err(model_err)?;
+    let session = commit(builder, &dir.join(file))?;
+    if !context.is_file() {
+        return Err(OnnxLoadError::Model(format!(
+            "{} não foi gravado",
+            context.display()
+        )));
+    }
+    Ok(session)
+}
+
+/// Apaga o EPContext e o blob dele.
+fn remove_openvino_context(context: &Path) {
+    let blob = context.with_file_name(format!(
+        "{}_OpenVINOExecutionProvider.bin",
+        context.file_stem().unwrap_or_default().to_string_lossy()
+    ));
+    for path in [context, blob.as_path()] {
+        let _ = fs::remove_file(path);
+    }
+}
+
+/// Apaga os blobs do cache de compilação (`*.blob`, gravados como somente leitura) da pasta `dir`
+/// do modelo.
+fn remove_compile_cache(dir: &Path) {
+    let Ok(entries) = fs::read_dir(dir.join(OPENVINO_CACHE_DIR)) else {
+        return;
+    };
+    for path in entries.flatten().map(|entry| entry.path()) {
+        if path.extension().is_some_and(|ext| ext == "blob") {
+            if let Ok(meta) = fs::metadata(&path) {
+                let mut permissions = meta.permissions();
+                #[allow(clippy::permissions_set_readonly_false)]
+                permissions.set_readonly(false);
+                let _ = fs::set_permissions(&path, permissions);
+            }
+            if let Err(e) = fs::remove_file(&path) {
+                eprintln!("[pointspeak] cache do OpenVINO: {}: {e}", path.display());
+            }
+        }
     }
 }
 
@@ -254,10 +517,11 @@ fn cache_dims(decoder: &Session) -> Result<CacheDims, String> {
     }
 }
 
-/// O par de sessões durante um ditado ([`WhisperModel`] do núcleo).
+/// As sessões durante um ditado ([`WhisperModel`] do núcleo).
 struct OrtModel<'a> {
     encoder: &'a mut Session,
     decoder: &'a mut Session,
+    decoder_past: &'a mut Session,
     dims: CacheDims,
     n_mels: usize,
 }
@@ -279,6 +543,7 @@ impl WhisperModel for OrtModel<'_> {
             .ok_or_else(|| inference(format!("o encoder não devolveu {ENCODER_OUTPUT}")))?;
         Ok(Box::new(OrtDecoderStep {
             decoder: &mut *self.decoder,
+            decoder_past: &mut *self.decoder_past,
             dims: self.dims,
             hidden,
             cache: None,
@@ -289,7 +554,10 @@ impl WhisperModel for OrtModel<'_> {
 
 /// Decoder de um trecho, com o KV cache entre os passos.
 struct OrtDecoderStep<'a> {
+    /// `decoder_model_merged`, só no 1º passo.
     decoder: &'a mut Session,
+    /// `decoder_with_past_model`, nos passos com cache.
+    decoder_past: &'a mut Session,
     dims: CacheDims,
     /// Saída do encoder do trecho.
     hidden: DynValue,
@@ -325,7 +593,6 @@ impl DecoderStep for OrtDecoderStep<'_> {
             .map(|&t| i64::from(t))
             .collect();
         let names = kv_names(self.dims.layers);
-        let use_cache = self.cache.is_some();
         let mut inputs: Vec<(String, SessionInputValue<'_>)> = Vec::with_capacity(names.len() + 3);
         inputs.push((
             INPUT_IDS.into(),
@@ -333,20 +600,21 @@ impl DecoderStep for OrtDecoderStep<'_> {
                 .map_err(inference)?
                 .into(),
         ));
-        inputs.push((ENCODER_HIDDEN.into(), (&self.hidden).into()));
-        inputs.push((
-            USE_CACHE.into(),
-            Tensor::from_array(([1usize], vec![use_cache]))
-                .map_err(inference)?
-                .into(),
-        ));
         match &self.cache {
+            // Passo com cache (with past): sem a saída do encoder e sem `use_cache_branch`.
             Some(cache) => {
                 for ((past, _), value) in names.iter().zip(cache) {
                     inputs.push((past.clone(), value.into()));
                 }
             }
             None => {
+                inputs.push((ENCODER_HIDDEN.into(), (&self.hidden).into()));
+                inputs.push((
+                    USE_CACHE.into(),
+                    Tensor::from_array(([1usize], vec![false]))
+                        .map_err(inference)?
+                        .into(),
+                ));
                 let empty = [1usize, self.dims.heads, 0, self.dims.head_dim];
                 for (past, _) in &names {
                     let value =
@@ -356,7 +624,11 @@ impl DecoderStep for OrtDecoderStep<'_> {
             }
         }
 
-        let mut outputs = self.decoder.run(inputs).map_err(inference)?;
+        let session = match self.cache {
+            Some(_) => &mut *self.decoder_past,
+            None => &mut *self.decoder,
+        };
+        let mut outputs = session.run(inputs).map_err(inference)?;
         let logits = {
             let (shape, data) = outputs[LOGITS]
                 .try_extract_tensor::<f32>()
@@ -373,7 +645,7 @@ impl DecoderStep for OrtDecoderStep<'_> {
             .map(|cache| cache.into_iter().map(Some).collect());
         let mut cache = Vec::with_capacity(names.len());
         for (i, (_, present)) in names.iter().enumerate() {
-            // A atenção cruzada (encoder) só sai calculada no primeiro passo; depois fica a mesma.
+            // A atenção cruzada (encoder) só sai no primeiro passo (o with past nem a devolve).
             let kept = match previous.as_mut() {
                 Some(previous) if present.contains(".encoder.") => previous[i].take(),
                 _ => None,
@@ -414,6 +686,21 @@ mod tests {
         );
         assert_eq!(names[3].0, "past_key_values.0.encoder.value");
         assert_eq!(names[7].1, "present.1.encoder.value");
+    }
+
+    #[test]
+    fn openvino_decoder_tries_the_directml_gpu_then_the_cpu() {
+        assert_eq!(
+            decoder_targets(Backend::Openvino, DmlDevice::Npu),
+            [
+                (Backend::Directml, DmlDevice::Gpu),
+                (Backend::Cpu, DmlDevice::Npu)
+            ]
+        );
+        assert_eq!(
+            decoder_targets(Backend::Directml, DmlDevice::Npu),
+            [(Backend::Directml, DmlDevice::Npu)]
+        );
     }
 
     /// Transcrição real com a variante ONNX: `ORT_DYLIB_PATH=…/libonnxruntime.so

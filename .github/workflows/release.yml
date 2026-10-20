@@ -1,0 +1,117 @@
+# Release do PointSpeak: instalador do Windows (NSIS, com ONNX Runtime DirectML + EP OpenVINO) e
+# pacotes do Linux (.deb e AppImage, com ONNX Runtime CPU), anexados a uma release do GitHub.
+#
+# - Push de uma tag `v*` (ex.: `git push origin v1.1.0`): gera e publica a release dessa tag.
+# - Manual (Actions → Release → Run workflow): informe uma tag que já existe no GitHub (ex.:
+#   `v1.0.0`) para gerar a release de uma versão antiga. O build usa os arquivos da própria tag.
+#
+# A release sai como rascunho: confira os arquivos e publique pela página de Releases.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag a gerar (ex.: v1.0.0)"
+        required: true
+
+permissions:
+  contents: write
+
+env:
+  TAG: ${{ inputs.tag || github.ref_name }}
+  # whisper.cpp portátil (os mesmos valores dos scripts de build): sem -march=native da máquina
+  # de build e sem OpenMP; CPU fixa em AVX2 + FMA + F16C.
+  GGML_NATIVE: "OFF"
+  GGML_OPENMP: "OFF"
+  GGML_AVX: "ON"
+  GGML_AVX2: "ON"
+  GGML_FMA: "ON"
+  GGML_F16C: "ON"
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    env:
+      # CRT estático no whisper.cpp, como o do Tauri (veja scripts/build-windows.sh).
+      CMAKE_C_FLAGS_RELEASE: "/MT /O2 /Ob2 /DNDEBUG"
+      CMAKE_CXX_FLAGS_RELEASE: "/MT /O2 /Ob2 /DNDEBUG"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: windows
+      - run: npm ci --no-audit --no-fund
+      - name: ONNX Runtime (DirectML + OpenVINO)
+        shell: bash
+        run: ./scripts/fetch-onnxruntime.sh windows
+      # PowerShell, não o bash: o Git Bash trocaria o "/MT" das flags do CMake por um caminho.
+      - name: Build (NSIS)
+        shell: pwsh
+        run: npx tauri build --bundles nsis --config src-tauri/tauri.onnxruntime-windows.conf.json
+      - name: Conferir o instalador
+        shell: pwsh
+        run: |
+          $nsi = "target/release/nsis/x64/installer.nsi"
+          foreach ($file in 'onnxruntime.dll', 'DirectML.dll', 'onnxruntime_providers_openvino.dll', 'openvino.dll', 'openvino_intel_npu_plugin.dll', 'resources\silero_vad.onnx') {
+            if (-not (Select-String -Path $nsi -Pattern $file -SimpleMatch -Quiet)) { throw "$file não está no instalador" }
+          }
+          Get-ChildItem target/release/bundle/nsis/*.exe
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: target/release/bundle/nsis/*.exe
+          if-no-files-found: error
+
+  linux:
+    # 22.04: o .deb roda nas distros com webkit2gtk 4.1 a partir dela (glibc mais antiga).
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: linux
+      - run: sudo apt-get install -y --no-install-recommends squashfs-tools
+      - run: ./scripts/setup-linux.sh
+      - name: Build (.deb e AppImage)
+        run: ./scripts/build-linux.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux
+          path: |
+            target/release/bundle/deb/*.deb
+            target/release/bundle/appimage/*.AppImage
+          if-no-files-found: error
+
+  release:
+    needs: [windows, linux]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.TAG }}
+          name: PointSpeak ${{ env.TAG }}
+          draft: true
+          generate_release_notes: true
+          # Os artefatos mantêm as subpastas (deb/, appimage/).
+          files: dist/**/*

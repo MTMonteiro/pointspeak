@@ -35,7 +35,7 @@ function isOneOf(value: unknown, allowed: readonly string[]): value is string {
   return typeof value === "string" && allowed.includes(value);
 }
 
-const MODEL_IDS = ["tiny", "base", "small", "large-v3-turbo"] as const;
+const MODEL_IDS = ["tiny", "base", "small", "large-v3-turbo", "parakeet-tdt-0.6b-v3"] as const;
 const BACKENDS = ["auto", "cpu", "directml", "openvino", "cuda", "vulkan"] as const;
 const STATES = ["idle", "recording", "transcribing", "success", "error"] as const;
 
@@ -61,18 +61,30 @@ function isAppConfig(value: unknown): value is AppConfig {
     && typeof value.silenceTimeoutMs === "number"
     && isOneOf(value.backend, BACKENDS)
     && typeof value.maxRecordingSecs === "number"
-    && isOneOf(value.outputMode, ["paste", "clipboard"]);
+    && isOneOf(value.outputMode, ["paste", "clipboard"])
+    && typeof value.unloadIdleMins === "number";
 }
 
 function isEngineStatus(value: unknown): value is EngineStatus {
   return isRecord(value)
     && (value.model === null || isOneOf(value.model, MODEL_IDS))
-    && isOneOf(value.status, ["notSelected", "loading", "loaded", "failed"])
+    && isOneOf(value.status, ["notSelected", "loading", "loaded", "failed", "released"])
     && isOneOf(value.backend, BACKENDS)
     && typeof value.paused === "boolean"
     && (value.fallbackReason === undefined || typeof value.fallbackReason === "string")
     && (value.device === undefined || isOneOf(value.device, ["npu", "gpu"]))
-    && (value.deviceFallbackReason === undefined || typeof value.deviceFallbackReason === "string");
+    && (value.deviceFallbackReason === undefined || typeof value.deviceFallbackReason === "string")
+    && (value.loadError === undefined || typeof value.loadError === "string")
+    && (value.loadProgress === undefined || isLoadProgress(value.loadProgress));
+}
+
+function isLoadProgress(value: unknown): boolean {
+  return isRecord(value)
+    && typeof value.percent === "number"
+    && typeof value.stage === "string"
+    && typeof value.elapsedSecs === "number"
+    && (value.expectedSecs === undefined || typeof value.expectedSecs === "number")
+    && typeof value.compiling === "boolean";
 }
 
 function isModelState(value: unknown): boolean {
@@ -157,6 +169,9 @@ function readContracts() {
     engineStatus: checked(rawFixtures.engineStatus, isEngineStatus, "engineStatus"),
     engineStatusFallback: checked(rawFixtures.engineStatusFallback, isEngineStatus, "engineStatusFallback"),
     engineStatusNpuToGpu: checked(rawFixtures.engineStatusNpuToGpu, isEngineStatus, "engineStatusNpuToGpu"),
+    engineStatusReleased: checked(rawFixtures.engineStatusReleased, isEngineStatus, "engineStatusReleased"),
+    engineStatusFailed: checked(rawFixtures.engineStatusFailed, isEngineStatus, "engineStatusFailed"),
+    engineStatusLoading: checked(rawFixtures.engineStatusLoading, isEngineStatus, "engineStatusLoading"),
     modelsGgml: checked(rawFixtures.modelsGgml, isModelsOverview, "modelsGgml"),
     modelsOnnx: checked(rawFixtures.modelsOnnx, isModelsOverview, "modelsOnnx"),
     modelProgress: checked(rawFixtures.modelProgress, isModelProgress, "modelProgress"),
@@ -244,6 +259,12 @@ describe("fixtures do contrato Rust ↔ TypeScript", () => {
       await act(async () => emitTauriEvent(ENGINE_STATUS, fixtures.engineStatusNpuToGpu));
       expect(screen.getByText(/NPU não carregou o modelo ONNX: op sem suporte\. Usando a GPU\./)).toBeInTheDocument();
       expect(screen.getByText("Pronto · tiny · DirectML · GPU")).toBeInTheDocument();
+      await act(async () => emitTauriEvent(ENGINE_STATUS, fixtures.engineStatusLoading));
+      expect(screen.getByRole("status", { name: "Estado do motor de transcrição" }))
+        .toHaveTextContent("Carregando modelo… 20% · compilando o encoder (só na 1ª vez)");
+      await act(async () => emitTauriEvent(ENGINE_STATUS, fixtures.engineStatusFailed));
+      expect(screen.getByRole("status", { name: "Estado do motor de transcrição" }))
+        .toHaveTextContent("Ditado indisponível: Pouca memória livre para carregar o modelo: precisa de cerca de 7,8 GB e há 3,8 GB livres.");
 
       view.unmount();
     },

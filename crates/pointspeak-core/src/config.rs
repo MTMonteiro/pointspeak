@@ -9,14 +9,16 @@ use std::ops::RangeInclusive;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::hotkey::{Accelerator, AcceleratorError, HotkeyMode};
+use crate::hotkey::{AcceleratorError, Hotkey, HotkeyMode};
 
 /// Faixa aceita para o tempo de silêncio que encerra a gravação.
 pub const SILENCE_TIMEOUT_RANGE_MS: RangeInclusive<u32> = 500..=10_000;
 /// Faixa aceita para a duração máxima de uma gravação.
 pub const MAX_RECORDING_RANGE_SECS: RangeInclusive<u32> = 1..=3_600;
+/// Faixa aceita para liberar o modelo da memória sem uso (0 = nunca).
+pub const UNLOAD_IDLE_RANGE_MINS: RangeInclusive<u32> = 0..=1440;
 
-/// Modelos Whisper suportados (reutilizado pelo Model Manager).
+/// Modelos de transcrição suportados (reutilizado pelo Model Manager): os Whisper e o Parakeet.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum ModelId {
     #[serde(rename = "tiny")]
@@ -27,15 +29,48 @@ pub enum ModelId {
     Small,
     #[serde(rename = "large-v3-turbo")]
     LargeV3Turbo,
+    /// NVIDIA Parakeet TDT 0.6B v3 (INT8): outra arquitetura (FastConformer + TDT), só em ONNX.
+    #[serde(rename = "parakeet-tdt-0.6b-v3")]
+    ParakeetTdtV3,
+}
+
+/// Família do modelo: decide a engine e o formato no disco.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ModelFamily {
+    /// Whisper: ggml (whisper.cpp) na CPU e ONNX (encoder + decoders) no DirectML/OpenVINO.
+    Whisper,
+    /// Parakeet TDT: um formato só (ONNX INT8), na CPU EP ou no DirectML.
+    Parakeet,
 }
 
 impl ModelId {
-    pub const ALL: [ModelId; 4] = [
+    pub const ALL: [ModelId; 5] = [
+        ModelId::Tiny,
+        ModelId::Base,
+        ModelId::Small,
+        ModelId::LargeV3Turbo,
+        ModelId::ParakeetTdtV3,
+    ];
+
+    /// Modelos Whisper (os que têm as duas variantes, ggml e ONNX).
+    pub const WHISPER: [ModelId; 4] = [
         ModelId::Tiny,
         ModelId::Base,
         ModelId::Small,
         ModelId::LargeV3Turbo,
     ];
+
+    pub fn family(self) -> ModelFamily {
+        match self {
+            ModelId::ParakeetTdtV3 => ModelFamily::Parakeet,
+            _ => ModelFamily::Whisper,
+        }
+    }
+
+    /// O modelo escolhe o idioma sozinho (a opção de idioma não vale para ele).
+    pub fn detects_language(self) -> bool {
+        self.family() == ModelFamily::Parakeet
+    }
 
     /// Nome usado no JSON e na interface.
     pub fn as_str(self) -> &'static str {
@@ -44,6 +79,7 @@ impl ModelId {
             ModelId::Base => "base",
             ModelId::Small => "small",
             ModelId::LargeV3Turbo => "large-v3-turbo",
+            ModelId::ParakeetTdtV3 => "parakeet-tdt-0.6b-v3",
         }
     }
 }
@@ -93,7 +129,8 @@ pub struct AppConfig {
     /// Modelo ativo; `None` enquanto nenhum foi escolhido.
     pub model: Option<ModelId>,
     pub language: Language,
-    /// Acelerador no formato `Mod+Tecla` (ex.: `Alt+Z`).
+    /// Acelerador no formato `Mod+Tecla` (ex.: `Alt+Z`) ou toque duplo num modificador (`Alt+Alt`,
+    /// veja [`Hotkey`]).
     pub hotkey: String,
     pub hotkey_mode: HotkeyMode,
     pub auto_stop_on_silence: bool,
@@ -101,6 +138,9 @@ pub struct AppConfig {
     pub backend: Backend,
     pub max_recording_secs: u32,
     pub output_mode: OutputMode,
+    /// Minutos sem ditar até o modelo sair da memória (0 = nunca). O próximo ditado carrega de novo
+    /// (a carga começa ao apertar o atalho, enquanto a pessoa fala).
+    pub unload_idle_mins: u32,
 }
 
 impl Default for AppConfig {
@@ -116,6 +156,7 @@ impl Default for AppConfig {
             backend: Backend::Auto,
             max_recording_secs: 300,
             output_mode: OutputMode::Paste,
+            unload_idle_mins: 0,
         }
     }
 }
@@ -129,17 +170,22 @@ pub enum ConfigError {
     SilenceTimeout,
     #[error("A gravação máxima deve ficar entre 1 e 3600 segundos.")]
     MaxRecording,
+    #[error("O tempo para liberar a memória deve ficar entre 0 e 1440 minutos (24 horas).")]
+    UnloadIdle,
 }
 
 impl AppConfig {
     /// Confere atalho e limites numéricos; devolve o primeiro problema encontrado.
     pub fn validate(&self) -> Result<(), ConfigError> {
-        Accelerator::parse(&self.hotkey)?;
+        Hotkey::parse(&self.hotkey)?;
         if !SILENCE_TIMEOUT_RANGE_MS.contains(&self.silence_timeout_ms) {
             return Err(ConfigError::SilenceTimeout);
         }
         if !MAX_RECORDING_RANGE_SECS.contains(&self.max_recording_secs) {
             return Err(ConfigError::MaxRecording);
+        }
+        if !UNLOAD_IDLE_RANGE_MINS.contains(&self.unload_idle_mins) {
+            return Err(ConfigError::UnloadIdle);
         }
         Ok(())
     }
@@ -147,7 +193,7 @@ impl AppConfig {
     /// Troca cada campo inválido pelo padrão, mantendo os válidos (para um arquivo editado à mão).
     pub fn sanitized(mut self) -> Self {
         let defaults = Self::default();
-        if Accelerator::parse(&self.hotkey).is_err() {
+        if Hotkey::parse(&self.hotkey).is_err() {
             self.hotkey = defaults.hotkey;
         }
         if !SILENCE_TIMEOUT_RANGE_MS.contains(&self.silence_timeout_ms) {
@@ -155,6 +201,9 @@ impl AppConfig {
         }
         if !MAX_RECORDING_RANGE_SECS.contains(&self.max_recording_secs) {
             self.max_recording_secs = defaults.max_recording_secs;
+        }
+        if !UNLOAD_IDLE_RANGE_MINS.contains(&self.unload_idle_mins) {
+            self.unload_idle_mins = defaults.unload_idle_mins;
         }
         self
     }
@@ -178,6 +227,7 @@ mod tests {
         assert_eq!(c.backend, Backend::Auto);
         assert_eq!(c.max_recording_secs, 300);
         assert_eq!(c.output_mode, OutputMode::Paste);
+        assert_eq!(c.unload_idle_mins, 0);
         assert_eq!(c.validate(), Ok(()));
     }
 
@@ -196,7 +246,8 @@ mod tests {
                 "silenceTimeoutMs": 2500,
                 "backend": "auto",
                 "maxRecordingSecs": 300,
-                "outputMode": "paste"
+                "outputMode": "paste",
+                "unloadIdleMins": 0
             })
         );
     }
@@ -214,6 +265,7 @@ mod tests {
             backend: Backend::Directml,
             max_recording_secs: 60,
             output_mode: OutputMode::Clipboard,
+            unload_idle_mins: 15,
         };
         let text = serde_json::to_string(&c).unwrap();
         assert!(text.contains(r#""model":"large-v3-turbo""#));
@@ -325,6 +377,31 @@ mod tests {
             };
             assert_eq!(c.validate().is_ok(), ok, "{ms} ms");
         }
+    }
+
+    #[test]
+    fn validate_checks_unload_idle_and_accepts_double_tap() {
+        for (mins, ok) in [
+            (0, true),
+            (15, true),
+            (90, true),
+            (1440, true),
+            (1441, false),
+        ] {
+            let c = AppConfig {
+                unload_idle_mins: mins,
+                ..AppConfig::default()
+            };
+            assert_eq!(c.validate().is_ok(), ok, "{mins} min");
+        }
+        let c = AppConfig {
+            unload_idle_mins: 9999,
+            hotkey: "Alt+Alt".into(),
+            ..AppConfig::default()
+        };
+        assert_eq!(c.validate(), Err(ConfigError::UnloadIdle));
+        let c = c.sanitized();
+        assert_eq!((c.unload_idle_mins, c.hotkey.as_str()), (0, "Alt+Alt"));
     }
 
     #[test]

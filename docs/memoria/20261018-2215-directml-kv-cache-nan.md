@@ -1,0 +1,14 @@
+# DirectML: NaN vem do KV cache do decoder merged; NPU Intel só pelo OpenVINO
+
+tipo: armadilha
+origem: claude · 2026-10-18/19
+
+- Sintoma: `DirectML reprovou na verificação: resultado diverge da CPU (logits com NaN; correlação 0.00, mínimo 0.95)`. O log por passo (rode o `pointspeak.exe` instalado com `Start-Process -RedirectStandardError`) mostrou na Arc B390: passo 0 (encoder) 0,9997, passo 1 (sem cache) 1,0000, passos 2–3 (com cache) NaN e valores ~1e38.
+- Causa: o ramo `use_cache_branch` verdadeiro do `decoder_model_merged` (nó `If`) no DirectML, em qualquer nível de otimização (até `ORT_DISABLE_ALL`) e no ONNX Runtime 1.24.1 e 1.24.4. Não é fp16. O `decoder_with_past_model_fp16.onnx` do mesmo export, nos passos 2+, dá 1,0000 a ~24 ms por passo. Correção: 5º arquivo no catálogo; merged só no 1º passo.
+- Reproduzir sem compilar: Python portátil (`uv` baixado para o scratchpad, `uv run --no-project --with onnxruntime-directml==1.24.1 --with numpy python -I script.py`) com o modelo da pasta do app.
+- NPU Intel (Core Ultra X7 358H, driver 32.0.100.4724): o `DeviceFilter::Npu` do DirectML não acha dispositivo; o OpenVINO acha. Pelo OpenVINO: encoder na NPU ok (0,26 s, correlação 0,9986); decoder na NPU **derruba o processo sem mensagem**; decoder na GPU do OpenVINO recompila a cada tamanho de entrada (>10 min). Por isso: encoder na NPU, decoders no DirectML (GPU) ou na CPU EP.
+- A 1ª inferência na NPU compila o encoder: ~17 min no large-v3-turbo, blob de 1,35 GB no `cache_dir`. A compilação é preguiçosa (na 1ª `run`, não no `commit_from_file`): sem a verificação de sanidade na carga, ela cairia no 1º ditado.
+- A EP OpenVINO (`onnxruntime_providers_openvino.dll`) é carregada pelo `onnxruntime.dll` do DirectML, mas só com o núcleo da mesma versão: 1.24.4 + EP 1.24.1 = erro 1114 (a mensagem culpa o `openvino.dll`, mas ele carrega sozinho; quem falha é a EP). Por isso o Windows usa o DirectML 1.24.1.
+- Pip `onnxruntime-openvino` precisa do `openvino` da mesma série (1.24.1 ↔ 2025.4.1) e de `import openvino` antes de criar a sessão; senão a EP não carrega e o ONNX Runtime cai calado para a CPU. Confira `get_providers()` antes de medir.
+- Instalador gerado **nativamente no Windows** (`npx tauri build --bundles nsis --config src-tauri/tauri.onnxruntime-windows.conf.json`): exporte antes as mesmas `GGML_*` e `CMAKE_*_FLAGS_RELEASE` do `build-windows.sh`. Sem elas o MSVC compila o whisper.cpp sem AVX (`GGML_NATIVE=ON` não liga nada no MSVC) e com `/MD`: o large-v3-turbo na CPU levou 199 s num áudio de 13,6 s, contra ~20 s com AVX2. Confira no `target/release/build/whisper-rs-sys-*/out/build/CMakeCache.txt` e troque as flags com `cargo clean -p whisper-rs-sys --release`.
+- Medir com o modelo carregado: `transcribe --repeat 3`. A 1ª rodada inclui aquecimento (DirectML compila shaders; a NPU carrega o blob) e engana.

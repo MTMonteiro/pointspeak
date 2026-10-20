@@ -4,6 +4,8 @@
 //!   features `cuda`/`vulkan`, GPU.
 //! - ONNX Runtime ([`OrtWhisperTranscriber`], `onnx_whisper.rs`) com a variante ONNX: DirectML,
 //!   OpenVINO e CUDA.
+//! - Parakeet TDT ([`ParakeetTranscriber`], `onnx_parakeet.rs`) no ONNX Runtime: a CPU EP ou o
+//!   DirectML, em qualquer backend escolhido ([`load_parakeet`]; os outros caem para a CPU EP).
 //!
 //! [`ensure_loaded`] monta o plano do config ([`plan`]: backend efetivo, variantes no disco) e
 //! carrega pela regra do núcleo (`pointspeak_core::engine::load_with_fallback`): se a ONNX não dá
@@ -17,28 +19,57 @@
 //! fato fica em `AppState.engine_runtime`, lido sem esperar uma transcrição em andamento.
 //! Os logs do whisper.cpp e do GGML não vão para o stdout: passam pelo `log` e só avisos e erros
 //! chegam ao stderr, com o prefixo `[pointspeak]` dos demais logs do app.
+//!
+//! Verificação de sanidade uma vez só: o dispositivo que passa fica em [`VerifiedDevices`]
+//! (`verified-devices.json`, pela versão do app, modelo, backend · dispositivo e tamanho do
+//! `onnxruntime.dll`); nas cargas seguintes só roda um aquecimento curto
+//! ([`OrtWhisperTranscriber::warm_up`]), que também tira do 1º ditado a compilação da NPU e dos
+//! shaders. Memória: [`release_if_idle`] solta a engine depois de `unloadIdleMins` sem uso e
+//! [`preload`] a carrega de novo ao apertar o atalho, enquanto a pessoa fala. Antes de carregar,
+//! o pico de RAM estimado (`pointspeak_core::memory`) é conferido com a memória livre
+//! ([`available_memory`]): se não cabe, a carga falha com o aviso em vez de travar a máquina; se
+//! só a referência da CPU da verificação não cabe, a verificação fica para a próxima carga.
+//!
+//! Progresso da carga (`pointspeak_core::load_progress`): a carga avisa cada etapa (encoder,
+//! decoder, aquecimento/verificação) e espera a duração da última carga igual ([`LoadTimes`],
+//! `load-times.json`) ou, na 1ª compilação do OpenVINO, a estimativa pelo tamanho do encoder. A
+//! thread `pointspeak-load-progress` manda a porcentagem à bandeja e ao `engine://status` a cada
+//! [`PROGRESS_TICK`].
 
+use std::cell::Cell;
+use std::collections::BTreeMap;
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{MutexGuard, Once};
+use std::time::{Duration, Instant};
 
-use pointspeak_core::config::{AppConfig, Backend};
+use pointspeak_core::config::{AppConfig, Backend, ModelFamily, ModelId};
+use pointspeak_core::dictation::{Input, ModelStatus};
 use pointspeak_core::engine::{
-    load_with_fallback, runtime_label, sanity_checked, EnginePlan, EngineRuntime, GgmlGpu,
-    OnnxLoadError,
+    load_with_fallback, runtime_label, sanity_checked, DmlDevice, EngineKind, EnginePlan,
+    EngineRuntime, GgmlGpu, OnnxLoadError,
 };
-use pointspeak_core::models::OnnxModelInfo;
+use pointspeak_core::load_progress::{
+    compile_estimate, LoadProgress, LoadProgressPayload, LoadStage,
+};
+use pointspeak_core::memory::{load_peak_bytes, memory_shortage};
 use pointspeak_core::models::{onnx_model_ready, ModelVariant};
+use pointspeak_core::models::{OnnxModelInfo, PARAKEET_TDT_V3};
 use pointspeak_core::transcriber::{
     self, join_segments, language_code, EngineKey, EngineSlot, TranscribeError, TranscribeOptions,
     Transcriber,
 };
-use pointspeak_core::whisper_onnx::sanity::{probe_verdict, ProbeReference};
+use pointspeak_core::whisper_onnx::sanity::{
+    correlation, probe_verdict, ProbeReference, MIN_CORRELATION,
+};
 use tauri::{AppHandle, Manager, Runtime};
 use whisper_rs::{
     FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters, WhisperState,
 };
 
-use crate::onnx_whisper::{cpu_probe_reference, OrtWhisperTranscriber};
+use crate::dictation::DictationHandle;
+use crate::onnx_parakeet::ParakeetTranscriber;
+use crate::onnx_whisper::{cpu_probe_reference, openvino_precompiled, OrtWhisperTranscriber};
 use crate::{models, onnx, settings, AppState};
 
 /// Teto de threads da inferência: acima disso o ganho some e o resto do sistema engasga.
@@ -170,39 +201,214 @@ pub fn model_variant<R: Runtime>(app: &AppHandle<R>, config: &AppConfig) -> Mode
     pointspeak_core::engine::engine_kind(backend, ggml_gpu()).variant()
 }
 
+/// Arquivo, na pasta de dados do app, com os dispositivos que já passaram na verificação.
+const VERIFIED_FILE: &str = "verified-devices.json";
+
+/// Dispositivos que já passaram na verificação de sanidade: uma chave por linha de
+/// [`verification_key`], num JSON de strings. Só aprovações entram (uma reprovação roda de novo na
+/// próxima carga); arquivo ausente ou ilegível = nada aprovado. Apagar o arquivo força a
+/// verificação de novo (ex.: depois de atualizar o driver da GPU/NPU).
+struct VerifiedDevices {
+    path: Option<PathBuf>,
+}
+
+impl VerifiedDevices {
+    fn open<R: Runtime>(app: &AppHandle<R>) -> Self {
+        Self {
+            path: app
+                .path()
+                .app_data_dir()
+                .ok()
+                .map(|d| d.join(VERIFIED_FILE)),
+        }
+    }
+
+    fn read(&self) -> Vec<String> {
+        self.path
+            .as_ref()
+            .and_then(|p| fs::read_to_string(p).ok())
+            .and_then(|text| serde_json::from_str(&text).ok())
+            .unwrap_or_default()
+    }
+
+    fn contains(&self, key: &str) -> bool {
+        self.read().iter().any(|k| k == key)
+    }
+
+    fn insert(&self, key: String) {
+        let Some(path) = &self.path else { return };
+        let mut keys = self.read();
+        if keys.contains(&key) {
+            return;
+        }
+        keys.push(key);
+        if let Ok(text) = serde_json::to_string_pretty(&keys) {
+            if let Err(e) = fs::write(path, text) {
+                log::warn!("{}: {e}", path.display());
+            }
+        }
+    }
+}
+
+/// Chave da aprovação de um dispositivo: versão do app, modelo, backend · dispositivo e o tamanho
+/// do `onnxruntime.dll` (outro ONNX Runtime pede a verificação de novo).
+fn verification_key(model: ModelId, label: &str, library_size: Option<u64>) -> String {
+    let library = library_size.map_or_else(|| "?".to_string(), |size| size.to_string());
+    format!(
+        "{} | {} | {label} | onnxruntime {library}",
+        env!("CARGO_PKG_VERSION"),
+        model.as_str()
+    )
+}
+
+/// Memória física livre, em bytes (`None` = não deu para ler; a conferência fica de fora).
+/// `POINTSPEAK_FREE_MEMORY_MB` simula outro valor (para testar o aviso).
+pub fn available_memory() -> Option<u64> {
+    if let Some(mb) = std::env::var("POINTSPEAK_FREE_MEMORY_MB")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+    {
+        return Some(mb * 1024 * 1024);
+    }
+    available_physical_memory()
+}
+
+#[cfg(windows)]
+fn available_physical_memory() -> Option<u64> {
+    use windows::Win32::System::SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX};
+    let mut status = MEMORYSTATUSEX {
+        dwLength: std::mem::size_of::<MEMORYSTATUSEX>() as u32,
+        ..Default::default()
+    };
+    // SAFETY: `status` é um MEMORYSTATUSEX com o `dwLength` certo, vivo durante a chamada.
+    unsafe { GlobalMemoryStatusEx(&mut status) }.ok()?;
+    Some(status.ullAvailPhys)
+}
+
+/// `MemAvailable` do `/proc/meminfo` (Linux).
+#[cfg(not(windows))]
+fn available_physical_memory() -> Option<u64> {
+    let meminfo = fs::read_to_string("/proc/meminfo").ok()?;
+    let line = meminfo.lines().find(|l| l.starts_with("MemAvailable:"))?;
+    let kib: u64 = line.split_whitespace().nth(1)?.parse().ok()?;
+    Some(kib * 1024)
+}
+
+/// Aviso se o pico de RAM da carga de `kind` no `backend` (com os arquivos da `variant` do
+/// `model` na pasta `dir` dos modelos) não cabe na memória livre.
+fn memory_warning(
+    kind: EngineKind,
+    backend: Backend,
+    model: ModelId,
+    variant: ModelVariant,
+    dir: &Path,
+) -> Option<String> {
+    let precompiled = backend == Backend::Openvino
+        && openvino_precompiled(&ModelVariant::Onnx.local_path(model, dir));
+    let needed = load_peak_bytes(kind, backend, variant.size_bytes(model), precompiled);
+    memory_shortage(needed, available_memory()?)
+}
+
 /// Carrega a engine do plano, com o fallback para o whisper.cpp na CPU.
 fn load_engine(
     plan: &EnginePlan,
     dir: &Path,
+    verified: &VerifiedDevices,
+    on_stage: &dyn Fn(LoadStage),
 ) -> Result<(Box<dyn Transcriber>, EngineRuntime), TranscribeError> {
+    // Sem a variante ONNX no disco, o que carrega é o ggml (fallback).
+    let kind = match plan.kind() {
+        EngineKind::Onnx if !plan.onnx_ready => EngineKind::WhisperCpp,
+        kind => kind,
+    };
+    if let Some(warning) = memory_warning(kind, plan.backend, plan.model, kind.variant(), dir) {
+        eprintln!("[pointspeak] modelo não carregado: {warning}");
+        log::warn!("modelo não carregado: {warning}");
+        return Err(TranscribeError::Load(warning));
+    }
     let onnx_dir = ModelVariant::Onnx.local_path(plan.model, dir);
     let ggml = ModelVariant::Ggml.local_path(plan.model, dir);
     // Referência da CPU para a verificação de sanidade: calculada uma vez por carga (NPU e GPU
     // usam a mesma); `None` dentro = a CPU não rodou e a verificação fica de fora.
     let mut reference: Option<Option<ProbeReference>> = None;
+    let mut parakeet_reference: Option<Option<Vec<f32>>> = None;
     let loaded = load_with_fallback(
         plan,
         &onnx_dir,
         |backend, device| {
             let environment = onnx::environment()
                 .ok_or_else(|| OnnxLoadError::Provider("ONNX Runtime não carregado".into()))?;
+            if plan.model.family() == ModelFamily::Parakeet {
+                return load_parakeet(
+                    environment,
+                    &ParakeetLoad {
+                        plan,
+                        models_dir: dir,
+                        model_dir: &onnx_dir,
+                        verified,
+                        on_stage,
+                    },
+                    backend,
+                    device,
+                    &mut parakeet_reference,
+                );
+            }
             let info = plan.model.onnx_info();
             let label = runtime_label(backend, device);
-            let mut engine =
-                OrtWhisperTranscriber::load(environment, &onnx_dir, info, backend, device)
-                    .inspect_err(|e| eprintln!("[pointspeak] engine ONNX ({label}): {e:?}"))?;
+            let mut engine = OrtWhisperTranscriber::load_with_stages(
+                environment,
+                &onnx_dir,
+                info,
+                backend,
+                device,
+                on_stage,
+            )
+            .inspect_err(|e| eprintln!("[pointspeak] engine ONNX ({label}): {e:?}"))?;
             if sanity_checked(backend) {
-                let reference = reference
-                    .get_or_insert_with(|| cpu_reference(environment, &onnx_dir, info))
-                    .as_ref();
-                check_device(&mut engine, reference, &label).inspect_err(|e| {
-                    eprintln!("[pointspeak] engine ONNX ({label}): {e:?}");
-                    log::warn!("engine ONNX ({label}): {e:?}");
-                })?;
+                let key = verification_key(plan.model, &label, onnx_library_size());
+                if verified.contains(&key) {
+                    // Já aprovado: só aquece (e, na NPU, compila agora, não no 1º ditado).
+                    on_stage(LoadStage::WarmUp);
+                    engine.warm_up().map_err(|e| {
+                        let e = OnnxLoadError::Model(format!("aquecimento: {e}"));
+                        eprintln!("[pointspeak] engine ONNX ({label}): {e:?}");
+                        e
+                    })?;
+                    eprintln!(
+                        "[pointspeak] verificação de sanidade ({label}): aprovada antes; só aquecimento"
+                    );
+                } else {
+                    on_stage(LoadStage::Verify);
+                    let reference = reference
+                        .get_or_insert_with(|| {
+                            // A referência abre o modelo de novo na CPU, com a engine carregada.
+                            if let Some(warning) = memory_warning(
+                                EngineKind::Onnx,
+                                Backend::Cpu,
+                                plan.model,
+                                ModelVariant::Onnx,
+                                dir,
+                            ) {
+                                eprintln!("[pointspeak] verificação de sanidade ({label}) fica para a próxima carga: {warning}");
+                                return None;
+                            }
+                            cpu_reference(environment, &onnx_dir, info)
+                        })
+                        .as_ref();
+                    let checked =
+                        check_device(&mut engine, reference, &label).inspect_err(|e| {
+                            eprintln!("[pointspeak] engine ONNX ({label}): {e:?}");
+                            log::warn!("engine ONNX ({label}): {e:?}");
+                        })?;
+                    if checked {
+                        verified.insert(key);
+                    }
+                }
             }
             Ok(Box::new(engine) as Box<dyn Transcriber>)
         },
         |backend| {
+            on_stage(LoadStage::Model);
             let gpu = matches!(backend, Backend::Cuda | Backend::Vulkan);
             Ok(Box::new(WhisperTranscriber::load_on(&ggml, gpu)?) as Box<dyn Transcriber>)
         },
@@ -214,6 +420,103 @@ fn load_engine(
     log::info!("transcrição: {summary}");
     eprintln!("[pointspeak] transcrição: {summary}");
     Ok((loaded.engine, runtime))
+}
+
+/// Tamanho do `onnxruntime.dll` carregado (entra na chave da verificação).
+fn onnx_library_size() -> Option<u64> {
+    onnx::library()
+        .and_then(|path| fs::metadata(path).ok())
+        .map(|meta| meta.len())
+}
+
+/// O que a carga do Parakeet precisa do [`load_engine`].
+struct ParakeetLoad<'a> {
+    plan: &'a EnginePlan,
+    models_dir: &'a Path,
+    model_dir: &'a Path,
+    verified: &'a VerifiedDevices,
+    on_stage: &'a dyn Fn(LoadStage),
+}
+
+/// Engine Parakeet no `backend`/`device`. No DirectML, a 1ª carga em cada dispositivo compara a
+/// saída do encoder na entrada fixa com a da CPU EP (`reference`, calculada uma vez por carga) e
+/// grava a aprovação no [`VerifiedDevices`]; divergência ou NaN contam como falha (o próximo
+/// dispositivo ou a CPU assume). Sempre termina com o aquecimento.
+fn load_parakeet(
+    environment: &ort::environment::Environment,
+    load: &ParakeetLoad<'_>,
+    backend: Backend,
+    device: Option<DmlDevice>,
+    reference: &mut Option<Option<Vec<f32>>>,
+) -> Result<Box<dyn Transcriber>, OnnxLoadError> {
+    let label = runtime_label(backend, device);
+    let log_error = |e: &OnnxLoadError| eprintln!("[pointspeak] engine Parakeet ({label}): {e:?}");
+    let mut engine = ParakeetTranscriber::load_with_stages(
+        environment,
+        load.model_dir,
+        &PARAKEET_TDT_V3,
+        backend,
+        device,
+        load.on_stage,
+    )
+    .inspect_err(log_error)?;
+    let key = verification_key(load.plan.model, &label, onnx_library_size());
+    if sanity_checked(backend) && !load.verified.contains(&key) {
+        (load.on_stage)(LoadStage::Verify);
+        let expected = reference.get_or_insert_with(|| {
+            if let Some(warning) = memory_warning(
+                EngineKind::Parakeet,
+                Backend::Cpu,
+                load.plan.model,
+                ModelVariant::Onnx,
+                load.models_dir,
+            ) {
+                eprintln!("[pointspeak] verificação de sanidade ({label}) fica para a próxima carga: {warning}");
+                return None;
+            }
+            ParakeetTranscriber::load(
+                environment,
+                load.model_dir,
+                &PARAKEET_TDT_V3,
+                Backend::Cpu,
+                None,
+            )
+            .map_err(|e| format!("{e:?}"))
+            .and_then(|mut cpu| cpu.probe_encoder().map_err(|e| e.to_string()))
+            .inspect_err(|e| {
+                eprintln!("[pointspeak] verificação de sanidade sem referência da CPU: {e}");
+            })
+            .ok()
+        });
+        if let Some(expected) = expected.as_ref() {
+            let got = engine
+                .probe_encoder()
+                .map_err(|e| OnnxLoadError::Model(format!("verificação de sanidade: {e}")))?;
+            let score = if got.len() == expected.len() && got.iter().all(|v| v.is_finite()) {
+                correlation(expected, &got)
+            } else {
+                0.0
+            };
+            eprintln!(
+                "[pointspeak] verificação de sanidade ({label}): encoder, correlação {score:.4}"
+            );
+            if score < MIN_CORRELATION {
+                let e = OnnxLoadError::Diverged(format!(
+                    "saída do encoder diverge da CPU (correlação {score:.2}, mínimo {MIN_CORRELATION:.2})"
+                ));
+                log_error(&e);
+                return Err(e);
+            }
+            load.verified.insert(key);
+        }
+    }
+    (load.on_stage)(LoadStage::WarmUp);
+    engine.warm_up().map_err(|e| {
+        let e = OnnxLoadError::Model(format!("aquecimento: {e}"));
+        log_error(&e);
+        e
+    })?;
+    Ok(Box::new(engine))
 }
 
 /// Referência da CPU para a verificação de sanidade; se a CPU EP não roda o modelo, a verificação
@@ -233,14 +536,15 @@ fn cpu_reference(
 
 /// Verificação de sanidade de um dispositivo do DirectML: roda a entrada fixa e compara com a CPU.
 /// Erro de execução vira [`OnnxLoadError::Model`] e divergência, [`OnnxLoadError::Diverged`]; nos
-/// dois casos o `load_with_fallback` tenta o próximo dispositivo.
+/// dois casos o `load_with_fallback` tenta o próximo dispositivo. `Ok(true)` = aprovado;
+/// `Ok(false)` = sem referência da CPU, a verificação ficou de fora (não vai para o registro).
 fn check_device(
     engine: &mut OrtWhisperTranscriber,
     reference: Option<&ProbeReference>,
     label: &str,
-) -> Result<(), OnnxLoadError> {
+) -> Result<bool, OnnxLoadError> {
     let Some(reference) = reference else {
-        return Ok(());
+        return Ok(false);
     };
     let report = engine
         .probe_report(reference)
@@ -254,7 +558,9 @@ fn check_device(
     let score = report.score;
     log::info!("verificação de sanidade ({label}): correlação {score:.4}");
     eprintln!("[pointspeak] verificação de sanidade ({label}): correlação {score:.4}");
-    probe_verdict(&report).map_err(OnnxLoadError::Diverged)
+    probe_verdict(&report)
+        .map(|()| true)
+        .map_err(OnnxLoadError::Diverged)
 }
 
 /// Garante a engine do config no slot e roda `f` nela. O `bool` diz se a engine foi carregada
@@ -269,14 +575,221 @@ fn with_engine<R: Runtime, T>(
     let state = app.state::<AppState>();
     let mut slot = slot(&state);
     let mut loaded_now = false;
+    let verified = VerifiedDevices::open(app);
     let engine = slot.ensure(key, |key| {
         runtime_slot(&state).take();
-        let (engine, runtime) = load_engine(&plan, &dir)?;
+        let times = LoadTimes::open(app);
+        let time_key = load_time_key(&plan);
+        let compiling = compiles_encoder(&plan, &dir);
+        let expected = if compiling {
+            Some(compile_estimate(plan.model.onnx_info().encoder.size_bytes))
+        } else {
+            times.get(&time_key)
+        };
+        let started = Instant::now();
+        *progress_slot(&state) = Some(LoadProgress::new(started, expected, compiling));
+        spawn_progress_ticker(app);
+        // A verificação (1ª vez no dispositivo) deixa a carga mais longa que as outras.
+        let verified_now = Cell::new(false);
+        let loaded = load_engine(&plan, &dir, &verified, &|stage| {
+            verified_now.set(verified_now.get() || stage == LoadStage::Verify);
+            if let Some(progress) = progress_slot(&state).as_mut() {
+                progress.set_stage(stage);
+            }
+        });
+        progress_slot(&state).take();
+        if loaded.is_ok() && !compiling && !verified_now.get() {
+            times.insert(time_key, started.elapsed());
+        }
+        *load_error_slot(&state) = loaded.as_ref().err().map(ToString::to_string);
+        let (engine, runtime) = loaded?;
         *runtime_slot(&state) = Some((key, runtime));
         loaded_now = true;
         Ok(engine)
     })?;
-    Ok((f(engine)?, loaded_now))
+    let result = f(engine);
+    *last_use(&state) = Some(Instant::now());
+    Ok((result?, loaded_now))
+}
+
+/// Arquivo, na pasta de dados do app, com a duração da última carga de cada modelo + backend.
+const LOAD_TIMES_FILE: &str = "load-times.json";
+
+/// De quanto em quanto tempo a porcentagem da carga é atualizada.
+const PROGRESS_TICK: Duration = Duration::from_millis(500);
+
+/// Duração da última carga comum (sem compilação nem verificação) de cada [`load_time_key`], em
+/// segundos, num JSON. É a duração esperada da próxima carga igual.
+struct LoadTimes {
+    path: Option<PathBuf>,
+}
+
+impl LoadTimes {
+    fn open<R: Runtime>(app: &AppHandle<R>) -> Self {
+        Self {
+            path: app
+                .path()
+                .app_data_dir()
+                .ok()
+                .map(|d| d.join(LOAD_TIMES_FILE)),
+        }
+    }
+
+    fn read(&self) -> BTreeMap<String, f64> {
+        self.path
+            .as_ref()
+            .and_then(|p| fs::read_to_string(p).ok())
+            .and_then(|text| serde_json::from_str(&text).ok())
+            .unwrap_or_default()
+    }
+
+    fn get(&self, key: &str) -> Option<Duration> {
+        self.read()
+            .get(key)
+            .filter(|secs| secs.is_finite() && **secs > 0.0)
+            .map(|secs| Duration::from_secs_f64(*secs))
+    }
+
+    fn insert(&self, key: String, duration: Duration) {
+        let Some(path) = &self.path else { return };
+        let mut times = self.read();
+        times.insert(key, (duration.as_secs_f64() * 10.0).round() / 10.0);
+        if let Ok(text) = serde_json::to_string_pretty(&times) {
+            if let Err(e) = fs::write(path, text) {
+                log::warn!("{}: {e}", path.display());
+            }
+        }
+    }
+}
+
+/// Chave do [`LoadTimes`]: modelo e backend efetivo (ex.: `large-v3-turbo | openvino`).
+fn load_time_key(plan: &EnginePlan) -> String {
+    format!(
+        "{} | {}",
+        plan.model.as_str(),
+        serde_json::to_value(plan.backend)
+            .ok()
+            .and_then(|v| v.as_str().map(str::to_string))
+            .unwrap_or_default()
+    )
+}
+
+/// A carga vai compilar o encoder no OpenVINO (sem o encoder pré-compilado no disco).
+fn compiles_encoder(plan: &EnginePlan, dir: &Path) -> bool {
+    plan.backend == Backend::Openvino
+        && plan.kind() == EngineKind::Onnx
+        && plan.onnx_ready
+        && !openvino_precompiled(&ModelVariant::Onnx.local_path(plan.model, dir))
+}
+
+fn progress_slot(state: &AppState) -> MutexGuard<'_, Option<LoadProgress>> {
+    state
+        .engine_load_progress
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+}
+
+/// Progresso da carga em andamento (`loadProgress` do `engine://status`).
+pub fn load_progress<R: Runtime>(app: &AppHandle<R>) -> Option<LoadProgressPayload> {
+    progress_slot(&app.state::<AppState>())
+        .as_ref()
+        .map(|progress| progress.payload(Instant::now()))
+}
+
+/// Manda a porcentagem da carga à bandeja e às Configurações a cada [`PROGRESS_TICK`], até a carga
+/// terminar.
+fn spawn_progress_ticker<R: Runtime>(app: &AppHandle<R>) {
+    let app = app.clone();
+    let spawned = std::thread::Builder::new()
+        .name("pointspeak-load-progress".into())
+        .spawn(move || loop {
+            std::thread::sleep(PROGRESS_TICK);
+            let percent = progress_slot(&app.state::<AppState>())
+                .as_ref()
+                .map(|progress| progress.percent(Instant::now()));
+            let Some(percent) = percent else { break };
+            if let Some(handle) = app.try_state::<DictationHandle>() {
+                handle.send(Input::LoadProgress(percent));
+            }
+            settings::refresh_engine_status(&app);
+        });
+    if let Err(e) = spawned {
+        eprintln!("[pointspeak] progresso da carga: thread não iniciou ({e})");
+    }
+}
+
+fn last_use(state: &AppState) -> MutexGuard<'_, Option<Instant>> {
+    state
+        .engine_last_use
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+}
+
+/// Há engine carregada (ou uma carga/transcrição em andamento segurando o slot).
+pub fn is_loaded<R: Runtime>(app: &AppHandle<R>) -> bool {
+    match app.state::<AppState>().transcriber.try_lock() {
+        Ok(slot) => slot.loaded_key().is_some(),
+        Err(_) => true,
+    }
+}
+
+/// Solta a engine se ela está sem uso há `idle` ou mais. Não espera: com o slot ocupado (carga ou
+/// transcrição em andamento) não faz nada. Devolve se soltou.
+pub fn release_if_idle<R: Runtime>(app: &AppHandle<R>, idle: Duration) -> bool {
+    let state = app.state::<AppState>();
+    let Ok(mut slot) = state.transcriber.try_lock() else {
+        return false;
+    };
+    let unused = last_use(&state).is_none_or(|at| at.elapsed() >= idle);
+    if slot.loaded_key().is_none() || !unused {
+        return false;
+    }
+    slot.unload();
+    runtime_slot(&state).take();
+    *last_use(&state) = None;
+    true
+}
+
+fn load_error_slot(state: &AppState) -> MutexGuard<'_, Option<String>> {
+    state
+        .engine_load_error
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+}
+
+/// Erro da última carga, se ela falhou (ex.: pouca memória livre).
+pub fn load_error<R: Runtime>(app: &AppHandle<R>) -> Option<String> {
+    load_error_slot(&app.state::<AppState>()).clone()
+}
+
+/// Carrega a engine do config em segundo plano se ela não está na memória (o atalho foi apertado
+/// depois de [`release_if_idle`]): a carga corre enquanto a pessoa fala e a transcrição espera por
+/// ela no lock do slot.
+pub fn preload<R: Runtime>(app: &AppHandle<R>, config: AppConfig) {
+    if config.model.is_none() || is_loaded(app) {
+        return;
+    }
+    let app = app.clone();
+    let spawned = std::thread::Builder::new()
+        .name("pointspeak-preload".into())
+        .spawn(move || {
+            if let Some(handle) = app.try_state::<DictationHandle>() {
+                handle.send(Input::Model(ModelStatus::Loading));
+            }
+            let status = match ensure_loaded(&app, &config) {
+                Ok(()) => ModelStatus::Loaded,
+                Err(e) => {
+                    eprintln!("[pointspeak] modelo não carregou: {e}");
+                    ModelStatus::Failed
+                }
+            };
+            if let Some(handle) = app.try_state::<DictationHandle>() {
+                handle.send(Input::Model(status));
+            }
+        });
+    if let Err(e) = spawned {
+        eprintln!("[pointspeak] pré-carga do modelo: thread não iniciou ({e})");
+    }
 }
 
 /// Garante a engine do modelo ativo carregada (carrega no primeiro uso; troca se o modelo ou o
@@ -335,6 +848,10 @@ pub fn transcribe<R: Runtime>(
         transcriber::transcribe(engine, audio, &opts)
     })?;
     if loaded_now {
+        // Carga na hora (ex.: depois de liberar a memória sem a pré-carga): o motor volta a "pronto".
+        if let Some(handle) = app.try_state::<DictationHandle>() {
+            handle.send(Input::Model(ModelStatus::Loaded));
+        }
         settings::refresh_engine_status(app);
     }
     Ok(text)
@@ -379,6 +896,47 @@ pub fn install_logging() {
 mod tests {
     use super::*;
     use pointspeak_core::events::ErrorKind;
+
+    #[test]
+    fn verification_key_changes_with_what_can_change_the_result() {
+        let key = verification_key(ModelId::LargeV3Turbo, "OpenVINO · NPU", Some(17_253_408));
+        assert_eq!(
+            key,
+            format!(
+                "{} | large-v3-turbo | OpenVINO · NPU | onnxruntime 17253408",
+                env!("CARGO_PKG_VERSION")
+            )
+        );
+        assert_ne!(
+            key,
+            verification_key(ModelId::LargeV3Turbo, "DirectML · GPU", Some(17_253_408))
+        );
+        assert_ne!(
+            key,
+            verification_key(ModelId::Base, "OpenVINO · NPU", Some(17_253_408))
+        );
+        assert_ne!(
+            key,
+            verification_key(ModelId::LargeV3Turbo, "OpenVINO · NPU", None)
+        );
+    }
+
+    #[test]
+    fn verified_devices_round_trip_in_the_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let verified = VerifiedDevices {
+            path: Some(dir.path().join(VERIFIED_FILE)),
+        };
+        assert!(!verified.contains("a"));
+        verified.insert("a".into());
+        verified.insert("b".into());
+        verified.insert("a".into());
+        assert!(verified.contains("a") && verified.contains("b"));
+        assert_eq!(verified.read(), ["a", "b"]);
+        // Arquivo estragado = nada aprovado (a verificação roda de novo).
+        fs::write(dir.path().join(VERIFIED_FILE), "{").unwrap();
+        assert!(!verified.contains("a"));
+    }
 
     #[test]
     fn threads_are_between_one_and_eight() {

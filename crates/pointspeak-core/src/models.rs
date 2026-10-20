@@ -1,5 +1,8 @@
-//! Model Manager: catálogos dos modelos Whisper (ggml e ONNX), estado de cada um e download
-//! verificado (um arquivo ou a pasta inteira de um modelo ONNX).
+//! Model Manager: catálogos dos modelos (Whisper em ggml e ONNX; Parakeet só em ONNX), estado de
+//! cada um e download verificado (um arquivo ou a pasta inteira de um modelo ONNX).
+//!
+//! O Parakeet TDT 0.6B v3 tem um formato só: a pasta [`PARAKEET_TDT_V3`] serve às duas variantes
+//! ([`ModelVariant::for_model`] o leva sempre à `Onnx`), em qualquer backend.
 //!
 //! Tudo aqui é testável sem rede: o download consome qualquer [`Read`] (o transporte HTTP fica no
 //! `src-tauri`), grava em `<arquivo>.part`, calcula o SHA-256 enquanto grava e só renomeia para o
@@ -16,7 +19,7 @@ use serde::Serialize;
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
-use crate::config::ModelId;
+use crate::config::{ModelFamily, ModelId};
 
 /// Repositório dos modelos ggml multilíngues do whisper.cpp.
 pub const MODELS_BASE_URL: &str = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main";
@@ -61,7 +64,7 @@ impl ModelInfo {
 /// `ggerganov/whisper.cpp` (`https://huggingface.co/api/models/ggerganov/whisper.cpp/tree/main`,
 /// campo `lfs`, conferido em 2026-10-18; o mesmo valor está em `.../raw/main/<arquivo>`).
 /// O hash do `ggml-tiny.bin` também foi conferido baixando o arquivo (`sha256sum`).
-pub const CATALOG: [ModelInfo; 4] = [
+pub const CATALOG: [ModelInfo; 5] = [
     ModelInfo {
         id: ModelId::Tiny,
         file_name: "ggml-tiny.bin",
@@ -94,6 +97,16 @@ pub const CATALOG: [ModelInfo; 4] = [
         display_size: "1,6 GB",
         description: "O mais preciso; pede GPU/NPU",
     },
+    // Parakeet: a linha só dá nome, tamanho e texto; os arquivos ficam no [`PARAKEET_TDT_V3`] (não
+    // há `.bin` ggml: `file_name` é a pasta e o [`scan_dir`] nunca a encontra como arquivo).
+    ModelInfo {
+        id: ModelId::ParakeetTdtV3,
+        file_name: "parakeet-tdt-0.6b-v3-int8",
+        size_bytes: 670_619_706,
+        sha256: "",
+        display_size: "640 MB",
+        description: "Rápido até na CPU; idioma automático (25 línguas)",
+    },
 ];
 
 impl ModelId {
@@ -106,8 +119,9 @@ impl ModelId {
     }
 }
 
-/// Variante de um modelo: o mesmo [`ModelId`] existe em ggml (whisper-rs, um arquivo `.bin`) e
-/// em ONNX (ort, uma pasta com encoder, decoder e vocabulário).
+/// Variante de um modelo: o mesmo [`ModelId`] Whisper existe em ggml (whisper-rs, um arquivo
+/// `.bin`) e em ONNX (ort, uma pasta com encoder, decoder e vocabulário). O Parakeet só tem a pasta
+/// ONNX ([`ModelVariant::for_model`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ModelVariant {
@@ -117,34 +131,43 @@ pub enum ModelVariant {
 }
 
 impl ModelVariant {
+    /// Variante em que `id` existe de fato quando a lista mostra `self`: o Parakeet é sempre `Onnx`.
+    pub fn for_model(self, id: ModelId) -> ModelVariant {
+        match id.family() {
+            ModelFamily::Whisper => self,
+            ModelFamily::Parakeet => ModelVariant::Onnx,
+        }
+    }
+
     /// Onde o modelo fica dentro da pasta dos modelos: o arquivo (ggml) ou a pasta (ONNX).
     pub fn local_path(self, id: ModelId, models_dir: &Path) -> PathBuf {
-        match self {
+        match self.for_model(id) {
             ModelVariant::Ggml => models_dir.join(id.info().file_name),
-            ModelVariant::Onnx => models_dir.join(id.onnx_info().dir_name),
+            ModelVariant::Onnx => models_dir.join(id.onnx_dir_name()),
         }
     }
 
     /// Bytes no disco depois do download.
     pub fn size_bytes(self, id: ModelId) -> u64 {
-        match self {
+        match self.for_model(id) {
             ModelVariant::Ggml => id.info().size_bytes,
-            ModelVariant::Onnx => id.onnx_info().size_bytes(),
+            ModelVariant::Onnx => id.onnx_files().iter().map(|f| f.size_bytes).sum(),
         }
     }
 
     /// Linha do catálogo no formato do `list_models` (o contrato JSON é o mesmo nas duas
     /// variantes). ONNX: `fileName` = pasta do modelo, `sizeBytes` = soma dos arquivos, `sha256`
-    /// vazio (são quatro arquivos; os hashes ficam no [`ONNX_CATALOG`]) e o `displaySize` do ggml,
-    /// porque as duas variantes diferem menos de 1 % no tamanho.
+    /// vazio (são cinco arquivos; os hashes ficam no [`ONNX_CATALOG`]) e o `displaySize` da
+    /// variante ONNX (desde o decoder with past ela é maior que o ggml).
     pub fn entry_info(self, id: ModelId) -> ModelInfo {
         let ggml = *id.info();
-        match self {
+        match self.for_model(id) {
             ModelVariant::Ggml => ggml,
             ModelVariant::Onnx => ModelInfo {
-                file_name: id.onnx_info().dir_name,
+                file_name: id.onnx_dir_name(),
                 size_bytes: self.size_bytes(id),
                 sha256: "",
+                display_size: id.onnx_display_size(),
                 ..ggml
             },
         }
@@ -195,8 +218,10 @@ impl ModelFile {
     }
 }
 
-/// Um modelo do catálogo ONNX: export do `onnx-community` no Hugging Face (encoder + decoder
-/// "merged", que tem o KV cache, em fp16) e o vocabulário.
+/// Um modelo do catálogo ONNX: export do `onnx-community` no Hugging Face (encoder, decoder
+/// "merged" e decoder "with past", em fp16) e o vocabulário. O merged roda o 1º passo de cada
+/// trecho (sem KV cache) e o with past os seguintes: o ramo com cache do merged (nó `If`) devolve
+/// NaN no DirectML.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OnnxModelInfo {
@@ -207,18 +232,28 @@ pub struct OnnxModelInfo {
     pub revision: &'static str,
     /// Pasta do modelo dentro da pasta dos modelos.
     pub dir_name: &'static str,
+    /// Soma dos arquivos para a interface, no critério do ggml (MiB/GiB arredondados para cima).
+    pub display_size: &'static str,
     /// Bandas do log-mel que o encoder espera.
     pub n_mels: usize,
     pub encoder: ModelFile,
     pub decoder: ModelFile,
+    /// `decoder_with_past_model_fp16.onnx`: os passos com KV cache.
+    pub decoder_with_past: ModelFile,
     pub vocab: ModelFile,
     pub added_tokens: ModelFile,
 }
 
 impl OnnxModelInfo {
     /// Arquivos na ordem do download (o vocabulário primeiro, por ser pequeno).
-    pub fn files(&self) -> [ModelFile; 4] {
-        [self.vocab, self.added_tokens, self.encoder, self.decoder]
+    pub fn files(&self) -> [ModelFile; 5] {
+        [
+            self.vocab,
+            self.added_tokens,
+            self.encoder,
+            self.decoder,
+            self.decoder_with_past,
+        ]
     }
 
     /// URL de download de um arquivo, no commit fixado.
@@ -252,8 +287,10 @@ const MULTILINGUAL_ADDED_TOKENS: ModelFile = ModelFile {
 /// Encoder e decoder: tamanho e SHA-256 do campo `lfs` (`oid sha256`) de
 /// `https://huggingface.co/api/models/<repo>/tree/<revision>?recursive=true`, conferido em
 /// 2026-10-18. `vocab.json` e `added_tokens.json` não estão no LFS: o hash foi calculado
-/// baixando cada um (`sha256sum`). Os dois `.onnx` do tiny também foram baixados e conferidos.
-/// Variante fp16 (`encoder_model_fp16.onnx` + `decoder_model_merged_fp16.onnx`): metade do
+/// baixando cada um (`sha256sum`). Os `.onnx` do tiny também foram baixados e conferidos, e o
+/// `decoder_with_past_model_fp16.onnx` do large-v3-turbo (2026-10-19).
+/// Variante fp16 (`encoder_model_fp16.onnx` + `decoder_model_merged_fp16.onnx` +
+/// `decoder_with_past_model_fp16.onnx`): metade do
 /// fp32, roda nativa no DirectML/GPU/NPU e na CPU (o ONNX Runtime insere os casts), e as
 /// entradas e saídas continuam f32. Motivo completo em `docs/tecnologia.md`.
 pub const ONNX_CATALOG: [OnnxModelInfo; 4] = [
@@ -262,6 +299,7 @@ pub const ONNX_CATALOG: [OnnxModelInfo; 4] = [
         repo: "onnx-community/whisper-tiny",
         revision: "ff4177021cc41f7db950912b73ea4fdf7d01d8e7",
         dir_name: "onnx-tiny",
+        display_size: "128 MB",
         n_mels: 80,
         encoder: ModelFile {
             path: "onnx/encoder_model_fp16.onnx",
@@ -273,6 +311,11 @@ pub const ONNX_CATALOG: [OnnxModelInfo; 4] = [
             size_bytes: 59_593_896,
             sha256: "a1aac8aa5f4e9e835e343025edf5e4d1644ab6f629c0f8c21e121868e60b3f6c",
         },
+        decoder_with_past: ModelFile {
+            path: "onnx/decoder_with_past_model_fp16.onnx",
+            size_bytes: 56_961_977,
+            sha256: "3c51c9c39e16dfc87dc2943a814df827731d8d1c4ca0ba952dcfe7fdecf0dfaa",
+        },
         vocab: MULTILINGUAL_VOCAB,
         added_tokens: MULTILINGUAL_ADDED_TOKENS,
     },
@@ -281,6 +324,7 @@ pub const ONNX_CATALOG: [OnnxModelInfo; 4] = [
         repo: "onnx-community/whisper-base",
         revision: "1846881b6b3a3024392c1eea3ad983695bc23925",
         dir_name: "onnx-base",
+        display_size: "234 MB",
         n_mels: 80,
         encoder: ModelFile {
             path: "onnx/encoder_model_fp16.onnx",
@@ -292,6 +336,11 @@ pub const ONNX_CATALOG: [OnnxModelInfo; 4] = [
             size_bytes: 104_727_818,
             sha256: "2078fb08b753e3a74120e6a52446eef1b98f6152d1da43658731367a93fd71a4",
         },
+        decoder_with_past: ModelFile {
+            path: "onnx/decoder_with_past_model_fp16.onnx",
+            size_bytes: 98_035_209,
+            sha256: "a80df24ce32fef82b8415dce6e37c09e958004b4a5a9170b4628a5cfddd82e3d",
+        },
         vocab: MULTILINGUAL_VOCAB,
         added_tokens: MULTILINGUAL_ADDED_TOKENS,
     },
@@ -300,6 +349,7 @@ pub const ONNX_CATALOG: [OnnxModelInfo; 4] = [
         repo: "onnx-community/whisper-small",
         revision: "36050c46d777d46dc4b5f43f6d90574fc38f8732",
         dir_name: "onnx-small",
+        display_size: "731 MB",
         n_mels: 80,
         encoder: ModelFile {
             path: "onnx/encoder_model_fp16.onnx",
@@ -311,6 +361,11 @@ pub const ONNX_CATALOG: [OnnxModelInfo; 4] = [
             size_bytes: 308_583_076,
             sha256: "22aba6c7f5193701cbe1519051b6ef097eb530ad6887b7093065ec59b830f61d",
         },
+        decoder_with_past: ModelFile {
+            path: "onnx/decoder_with_past_model_fp16.onnx",
+            size_bytes: 279_478_163,
+            sha256: "3a65cf85fdb5f77bda73bc22c360bc1de72b226f6c63dc3b0a0be17db640ac86",
+        },
         vocab: MULTILINGUAL_VOCAB,
         added_tokens: MULTILINGUAL_ADDED_TOKENS,
     },
@@ -319,6 +374,7 @@ pub const ONNX_CATALOG: [OnnxModelInfo; 4] = [
         repo: "onnx-community/whisper-large-v3-turbo",
         revision: "360ebcde2559d60bb474678be3c1de9ef347d01a",
         dir_name: "onnx-large-v3-turbo",
+        display_size: "1,9 GB",
         n_mels: 128,
         encoder: ModelFile {
             path: "onnx/encoder_model_fp16.onnx",
@@ -329,6 +385,11 @@ pub const ONNX_CATALOG: [OnnxModelInfo; 4] = [
             path: "onnx/decoder_model_merged_fp16.onnx",
             size_bytes: 344_227_339,
             sha256: "fdf10afca73a0c7bf87286cfb96cf7028a9edbc9bb02512509a526f95b126c9d",
+        },
+        decoder_with_past: ModelFile {
+            path: "onnx/decoder_with_past_model_fp16.onnx",
+            size_bytes: 317_771_757,
+            sha256: "e971827af2f12c152491e21594e9eecf5415ad568d6dc0d6fe794713dfbae815",
         },
         vocab: ModelFile {
             path: "vocab.json",
@@ -343,13 +404,114 @@ pub const ONNX_CATALOG: [OnnxModelInfo; 4] = [
     },
 ];
 
+/// O Parakeet TDT 0.6B v3 em ONNX INT8 (export do `istupakov` para a biblioteca onnx-asr):
+/// pré-processador (log-mel de 128 bandas), encoder FastConformer, decoder + joint do TDT e o
+/// vocabulário SentencePiece. Licença CC-BY-4.0 (NVIDIA).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ParakeetInfo {
+    pub id: ModelId,
+    pub repo: &'static str,
+    /// Commit fixado: os hashes valem para ele.
+    pub revision: &'static str,
+    pub dir_name: &'static str,
+    pub display_size: &'static str,
+    /// `nemo128.onnx`: áudio 16 kHz → log-mel `[1, 128, T]`.
+    pub preprocessor: ModelFile,
+    /// `encoder-model.int8.onnx`: log-mel → `[1, 1024, T/8]`.
+    pub encoder: ModelFile,
+    /// `decoder_joint-model.int8.onnx`: um frame do encoder + último token → logits dos tokens e
+    /// das durações.
+    pub decoder_joint: ModelFile,
+    /// `vocab.txt`: `<token> <id>` por linha (`▁` = espaço; `<blk>` = branco).
+    pub vocab: ModelFile,
+}
+
+impl ParakeetInfo {
+    /// Arquivos na ordem do download (os pequenos primeiro).
+    pub fn files(&self) -> [ModelFile; 4] {
+        [
+            self.vocab,
+            self.preprocessor,
+            self.decoder_joint,
+            self.encoder,
+        ]
+    }
+}
+
+/// Catálogo do Parakeet. Tamanho e SHA-256 dos `.onnx` do campo `lfs` de
+/// `https://huggingface.co/api/models/istupakov/parakeet-tdt-0.6b-v3-onnx/tree/<revision>`
+/// (2026-10-19); o `vocab.txt` (fora do LFS) e os `.onnx` também foram baixados e conferidos com
+/// `sha256sum`.
+pub const PARAKEET_TDT_V3: ParakeetInfo = ParakeetInfo {
+    id: ModelId::ParakeetTdtV3,
+    repo: "istupakov/parakeet-tdt-0.6b-v3-onnx",
+    revision: "8f23f0c03c8761650bdb5b40aaf3e40d2c15f1ce",
+    dir_name: "parakeet-tdt-0.6b-v3-int8",
+    display_size: "640 MB",
+    preprocessor: ModelFile {
+        path: "nemo128.onnx",
+        size_bytes: 139_764,
+        sha256: "a9fde1486ebfcc08f328d75ad4610c67835fea58c73ba57e3209a6f6cf019e9f",
+    },
+    encoder: ModelFile {
+        path: "encoder-model.int8.onnx",
+        size_bytes: 652_183_999,
+        sha256: "6139d2fa7e1b086097b277c7149725edbab89cc7c7ae64b23c741be4055aff09",
+    },
+    decoder_joint: ModelFile {
+        path: "decoder_joint-model.int8.onnx",
+        size_bytes: 18_202_004,
+        sha256: "eea7483ee3d1a30375daedc8ed83e3960c91b098812127a0d99d1c8977667a70",
+    },
+    vocab: ModelFile {
+        path: "vocab.txt",
+        size_bytes: 93_939,
+        sha256: "d58544679ea4bc6ac563d1f545eb7d474bd6cfa467f0a6e2c1dc1c7d37e3c35d",
+    },
+};
+
 impl ModelId {
-    /// Entrada do catálogo ONNX deste modelo.
+    /// Entrada do catálogo Whisper ONNX deste modelo. Só para modelos Whisper: o Parakeet usa o
+    /// [`PARAKEET_TDT_V3`] (as funções `onnx_*` servem aos dois).
     pub fn onnx_info(self) -> &'static OnnxModelInfo {
         ONNX_CATALOG
             .iter()
             .find(|m| m.id == self)
-            .expect("todo ModelId está no catálogo ONNX")
+            .expect("só os modelos Whisper estão no catálogo Whisper ONNX")
+    }
+
+    /// Pasta da variante ONNX dentro da pasta dos modelos.
+    pub fn onnx_dir_name(self) -> &'static str {
+        match self.family() {
+            ModelFamily::Whisper => self.onnx_info().dir_name,
+            ModelFamily::Parakeet => PARAKEET_TDT_V3.dir_name,
+        }
+    }
+
+    /// Arquivos da variante ONNX, na ordem do download.
+    pub fn onnx_files(self) -> Vec<ModelFile> {
+        match self.family() {
+            ModelFamily::Whisper => self.onnx_info().files().to_vec(),
+            ModelFamily::Parakeet => PARAKEET_TDT_V3.files().to_vec(),
+        }
+    }
+
+    /// URL de download de um arquivo da variante ONNX, no commit fixado.
+    pub fn onnx_url(self, file: &ModelFile) -> String {
+        let (repo, revision) = match self.family() {
+            ModelFamily::Whisper => (self.onnx_info().repo, self.onnx_info().revision),
+            ModelFamily::Parakeet => (PARAKEET_TDT_V3.repo, PARAKEET_TDT_V3.revision),
+        };
+        format!("{ONNX_MODELS_HOST}/{repo}/resolve/{revision}/{}", file.path)
+    }
+
+    /// Tamanho da variante ONNX para a interface.
+    pub fn onnx_display_size(self) -> &'static str {
+        match self.family() {
+            ModelFamily::Whisper => self.onnx_info().display_size,
+            ModelFamily::Parakeet => PARAKEET_TDT_V3.display_size,
+        }
     }
 }
 
@@ -596,6 +758,7 @@ pub fn download_verified_files<R: Read>(
                 return Err(DownloadError::Cancelled);
             }
             let target = staging.join(item.file_name);
+            reuse_installed(&dest_dir.join(item.file_name), &target, item.expected.size);
             let complete = fs::metadata(&target)
                 .map(|m| m.is_file() && m.len() == item.expected.size)
                 .unwrap_or(false);
@@ -633,6 +796,25 @@ pub fn download_verified_files<R: Read>(
     result
 }
 
+/// Arquivo que já está na pasta final do modelo com o tamanho do catálogo (conferido no download
+/// que o instalou) entra na pasta `.part` sem baixar de novo: quando o catálogo ganha um arquivo,
+/// quem tem o modelo baixa só o que falta. Hard link (instantâneo, mesmo volume); se não der,
+/// cópia. Falha aqui não é erro: o arquivo só é baixado.
+fn reuse_installed(installed: &Path, target: &Path, size: u64) {
+    let ready = |path: &Path| {
+        fs::metadata(path)
+            .map(|m| m.is_file() && m.len() == size)
+            .unwrap_or(false)
+    };
+    if ready(target) || !ready(installed) {
+        return;
+    }
+    let _ = fs::remove_file(target);
+    if fs::hard_link(installed, target).is_err() && fs::copy(installed, target).is_err() {
+        let _ = fs::remove_file(target);
+    }
+}
+
 /// Modelos cujo arquivo final existe em `dir` com o tamanho do catálogo. Não recalcula o hash
 /// (o download já conferiu); arquivo de tamanho errado não conta.
 pub fn scan_dir(dir: &Path) -> HashSet<ModelId> {
@@ -650,18 +832,16 @@ pub fn scan_dir(dir: &Path) -> HashSet<ModelId> {
 /// Modelos ONNX cuja pasta existe em `dir` com todos os arquivos no tamanho do catálogo (a pasta
 /// `.part` de um download incompleto não conta).
 pub fn scan_onnx_dir(dir: &Path) -> HashSet<ModelId> {
-    ONNX_CATALOG
-        .iter()
-        .filter(|m| onnx_model_ready(dir, m.id))
-        .map(|m| m.id)
+    ModelId::ALL
+        .into_iter()
+        .filter(|&id| onnx_model_ready(dir, id))
         .collect()
 }
 
 /// A pasta ONNX de `id` em `dir` tem todos os arquivos no tamanho do catálogo.
 pub fn onnx_model_ready(dir: &Path, id: ModelId) -> bool {
-    let info = id.onnx_info();
-    let model_dir = dir.join(info.dir_name);
-    info.files().iter().all(|f| {
+    let model_dir = dir.join(id.onnx_dir_name());
+    id.onnx_files().iter().all(|f| {
         fs::metadata(model_dir.join(f.file_name()))
             .map(|meta| meta.is_file() && meta.len() == f.size_bytes)
             .unwrap_or(false)
@@ -959,9 +1139,15 @@ mod tests {
                     "1,6 GB",
                     "O mais preciso; pede GPU/NPU"
                 ),
+                (
+                    "parakeet-tdt-0.6b-v3",
+                    "parakeet-tdt-0.6b-v3-int8",
+                    "640 MB",
+                    "Rápido até na CPU; idioma automático (25 línguas)"
+                ),
             ]
         );
-        for id in ModelId::ALL {
+        for id in ModelId::WHISPER {
             let info = id.info();
             assert_eq!(info.id, id);
             assert_eq!(info.sha256.len(), 64, "{id:?}");
@@ -1227,6 +1413,71 @@ mod tests {
     }
 
     #[test]
+    fn parakeet_has_one_folder_for_every_variant() {
+        let id = ModelId::ParakeetTdtV3;
+        let names: Vec<_> = id.onnx_files().iter().map(ModelFile::file_name).collect();
+        assert_eq!(
+            names,
+            [
+                "vocab.txt",
+                "nemo128.onnx",
+                "decoder_joint-model.int8.onnx",
+                "encoder-model.int8.onnx"
+            ]
+        );
+        for file in id.onnx_files() {
+            assert_eq!(file.sha256.len(), 64, "{}", file.path);
+        }
+        // A linha do catálogo soma os arquivos e mostra o tamanho no critério dos outros.
+        assert_eq!(ModelVariant::Onnx.size_bytes(id), id.info().size_bytes);
+        assert_eq!(ModelVariant::Ggml.size_bytes(id), id.info().size_bytes);
+        assert_eq!(id.onnx_display_size(), id.info().display_size);
+        // Lista ggml (CPU) ou ONNX: a mesma pasta.
+        assert_eq!(ModelVariant::Ggml.for_model(id), ModelVariant::Onnx);
+        assert_eq!(
+            ModelVariant::Ggml.for_model(ModelId::Base),
+            ModelVariant::Ggml
+        );
+        let dir = Path::new("/models");
+        assert_eq!(
+            ModelVariant::Ggml.local_path(id, dir),
+            dir.join("parakeet-tdt-0.6b-v3-int8")
+        );
+        assert_eq!(
+            ModelVariant::Ggml.entry_info(id),
+            ModelVariant::Onnx.entry_info(id)
+        );
+        assert_eq!(
+            id.onnx_url(&PARAKEET_TDT_V3.encoder),
+            "https://huggingface.co/istupakov/parakeet-tdt-0.6b-v3-onnx/resolve/8f23f0c03c8761650bdb5b40aaf3e40d2c15f1ce/encoder-model.int8.onnx"
+        );
+        assert!(id.detects_language());
+        assert!(!ModelId::LargeV3Turbo.detects_language());
+    }
+
+    #[test]
+    fn parakeet_folder_is_ready_with_every_file_and_never_as_ggml() {
+        let dir = tempfile::tempdir().unwrap();
+        let id = ModelId::ParakeetTdtV3;
+        let model_dir = dir.path().join(id.onnx_dir_name());
+        fs::create_dir(&model_dir).unwrap();
+        let files = id.onnx_files();
+        for file in &files[..3] {
+            File::create(model_dir.join(file.file_name()))
+                .unwrap()
+                .set_len(file.size_bytes)
+                .unwrap();
+        }
+        assert!(!scan_onnx_dir(dir.path()).contains(&id));
+        File::create(model_dir.join(files[3].file_name()))
+            .unwrap()
+            .set_len(files[3].size_bytes)
+            .unwrap();
+        assert!(scan_onnx_dir(dir.path()).contains(&id));
+        assert!(!scan_dir(dir.path()).contains(&id));
+    }
+
+    #[test]
     fn onnx_catalog_files() {
         let rows: Vec<_> = ONNX_CATALOG
             .iter()
@@ -1246,7 +1497,7 @@ mod tests {
                 ),
             ]
         );
-        for id in ModelId::ALL {
+        for id in ModelId::WHISPER {
             let info = id.onnx_info();
             assert_eq!(info.id, id);
             assert_eq!(info.revision.len(), 40, "{id:?}");
@@ -1257,7 +1508,8 @@ mod tests {
                     "vocab.json",
                     "added_tokens.json",
                     "encoder_model_fp16.onnx",
-                    "decoder_model_merged_fp16.onnx"
+                    "decoder_model_merged_fp16.onnx",
+                    "decoder_with_past_model_fp16.onnx"
                 ]
             );
             for f in info.files() {
@@ -1286,7 +1538,7 @@ mod tests {
                 "a1aac8aa5f4e9e835e343025edf5e4d1644ab6f629c0f8c21e121868e60b3f6c"
             )
         );
-        assert_eq!(tiny.size_bytes(), 77_184_276);
+        assert_eq!(tiny.size_bytes(), 134_146_253);
         assert_eq!(
             tiny.url(&tiny.encoder),
             "https://huggingface.co/onnx-community/whisper-tiny/resolve/\
@@ -1296,7 +1548,7 @@ mod tests {
         let large = ModelId::LargeV3Turbo.onnx_info();
         assert_eq!(ModelId::Small.onnx_info().vocab, tiny.vocab);
         assert_ne!(large.added_tokens.sha256, tiny.added_tokens.sha256);
-        assert_eq!(large.size_bytes(), 1_619_641_148);
+        assert_eq!(large.size_bytes(), 1_937_412_905);
     }
 
     #[test]
@@ -1312,7 +1564,7 @@ mod tests {
             Path::new("/m/onnx-base")
         );
         assert_eq!(ModelVariant::Ggml.size_bytes(ModelId::Tiny), 77_691_713);
-        assert_eq!(ModelVariant::Onnx.size_bytes(ModelId::Tiny), 77_184_276);
+        assert_eq!(ModelVariant::Onnx.size_bytes(ModelId::Tiny), 134_146_253);
         assert_eq!(serde_json::to_value(ModelVariant::Onnx).unwrap(), "onnx");
     }
 
@@ -1430,6 +1682,38 @@ mod tests {
         assert_eq!(result, Ok(()));
         assert_eq!(opened, [1, 2]);
         assert!(!staging.exists());
+    }
+
+    #[test]
+    fn multi_file_download_reuses_files_of_the_installed_model() {
+        // Modelo instalado antes de o catálogo ganhar `dec.onnx`: só ele é baixado.
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("onnx-test");
+        let data = items_data();
+        fs::create_dir_all(&dest).unwrap();
+        for (name, bytes, _) in &data[..2] {
+            fs::write(dest.join(name), bytes).unwrap();
+        }
+        // Arquivo de tamanho errado na pasta instalada é baixado de novo.
+        fs::write(dest.join(&data[2].0), b"velho").unwrap();
+        let mut opened = Vec::new();
+        let result = download_verified_files(
+            &items(&data),
+            &dest,
+            &AtomicBool::new(false),
+            fake_clock(),
+            |i| {
+                opened.push(i);
+                Ok(ChunkReader::new(data[i].1.clone(), 1_000))
+            },
+            |_| {},
+        );
+        assert_eq!(result, Ok(()));
+        assert_eq!(opened, [2]);
+        for (name, bytes, _) in &data {
+            assert_eq!(&fs::read(dest.join(name)).unwrap(), bytes, "{name}");
+        }
+        assert!(!part_path(&dest).exists());
     }
 
     #[test]
@@ -1668,26 +1952,26 @@ mod tests {
         assert_eq!(r.variant(), ModelVariant::Onnx);
         r.apply_scan(HashSet::from([ModelId::Tiny]));
         r.begin_download(ModelId::Base).unwrap();
-        // O total do download é a soma dos 4 arquivos.
+        // O total do download é a soma dos 5 arquivos.
         assert_eq!(
             r.state(ModelId::Base, None),
             ModelState::Downloading {
                 done: 0,
-                total: 147_131_618
+                total: 245_166_827
             }
         );
-        assert_eq!(r.used_bytes(), 77_184_276);
+        assert_eq!(r.used_bytes(), 134_146_253);
         let value =
             serde_json::to_value(r.overview(Some(ModelId::Tiny), "/m".to_string())).unwrap();
-        assert_eq!(value["usedBytes"], 77_184_276);
+        assert_eq!(value["usedBytes"], 134_146_253);
         assert_eq!(
             value["models"][0],
             json!({
                 "id": "tiny",
                 "fileName": "onnx-tiny",
-                "sizeBytes": 77_184_276,
+                "sizeBytes": 134_146_253,
                 "sha256": "",
-                "displaySize": "75 MB",
+                "displaySize": "128 MB",
                 "description": "Mais rápido, menos preciso",
                 "recommended": false,
                 "state": "active"
@@ -1706,15 +1990,28 @@ mod tests {
     }
 
     #[test]
-    fn onnx_display_size_matches_ggml_within_one_percent() {
-        for info in CATALOG {
-            let onnx = ModelVariant::Onnx.size_bytes(info.id) as f64;
-            let ggml = info.size_bytes as f64;
-            assert!(((onnx - ggml) / ggml).abs() < 0.01, "{:?}", info.id);
+    fn onnx_display_size_follows_the_ggml_rounding() {
+        // Mesmo critério do ggml: MiB (ou GiB com uma casa e vírgula) arredondados para cima.
+        fn display(bytes: u64) -> String {
+            let mib = bytes as f64 / 1_048_576.0;
+            if mib < 1_024.0 {
+                format!("{} MB", mib.ceil())
+            } else {
+                format!("{:.1} GB", (mib / 1_024.0 * 10.0).ceil() / 10.0).replace('.', ",")
+            }
+        }
+        for id in [ModelId::Base, ModelId::LargeV3Turbo] {
+            assert_eq!(display(id.info().size_bytes), id.info().display_size);
+        }
+        for info in ONNX_CATALOG {
+            let entry = ModelVariant::Onnx.entry_info(info.id);
             assert_eq!(
-                ModelVariant::Onnx.entry_info(info.id).display_size,
-                info.display_size
+                entry.display_size,
+                display(info.size_bytes()),
+                "{:?}",
+                info.id
             );
+            assert_eq!(entry.display_size, info.display_size);
         }
         assert_eq!(
             ModelVariant::Ggml.entry_info(ModelId::Small),

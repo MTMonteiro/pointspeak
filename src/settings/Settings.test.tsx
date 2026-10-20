@@ -13,6 +13,7 @@ const CONFIG = {
   silenceTimeoutMs: 2500,
   backend: "auto",
   maxRecordingSecs: 300,
+  unloadIdleMins: 0,
   outputMode: "paste",
 };
 
@@ -69,6 +70,13 @@ describe("Settings", () => {
     await waitFor(() => expect(callsFor("set_config")).toHaveLength(1));
     expect((callsFor("set_config")[0]!.args?.config as typeof CONFIG).language).toBe("en");
     expect(await screen.findByText("Salvo")).toBeInTheDocument();
+  });
+
+  it("avisa que o Parakeet detecta o idioma sozinho", async () => {
+    mockTauri({ get_config: () => ({ ...CONFIG, model: "parakeet-tdt-0.6b-v3" }) });
+    render(<Settings />);
+    fireEvent.click(await screen.findByRole("link", { name: "Idioma" }));
+    expect(await screen.findByText(/O Parakeet detecta o idioma sozinho/)).toBeInTheDocument();
   });
 
   it("reverte uma mudança recusada e liga o erro ao campo", async () => {
@@ -233,6 +241,37 @@ describe("Settings", () => {
 
     await waitFor(() => expect(callsFor("set_config")).toHaveLength(1));
     expect((callsFor("set_config")[0]!.args?.config as typeof CONFIG).hotkey).toBe("Ctrl+Shift+K");
+    await waitFor(() => expect(callsFor("suspend_hotkey").at(-1)?.args).toEqual({ suspended: false }));
+  });
+
+  it("dois toques rápidos num modificador viram o atalho de toque duplo", async () => {
+    render(<Settings />);
+    fireEvent.click(await screen.findByRole("link", { name: "Atalho" }));
+    fireEvent.click(screen.getByRole("button", { name: "Alterar" }));
+    await screen.findByText("Pressione a nova combinação… (Esc cancela)");
+    fireEvent.keyDown(document, { key: "Alt", code: "AltLeft", altKey: true });
+    fireEvent.keyUp(document, { key: "Alt", code: "AltLeft" });
+    fireEvent.keyDown(document, { key: "Alt", code: "AltLeft", altKey: true });
+
+    await waitFor(() => expect(callsFor("set_config")).toHaveLength(1));
+    expect((callsFor("set_config")[0]!.args?.config as typeof CONFIG).hotkey).toBe("Alt+Alt");
+    await waitFor(() => expect(callsFor("suspend_hotkey").at(-1)?.args).toEqual({ suspended: false }));
+  });
+
+  it("Alt usado numa combinação não conta como toque", async () => {
+    render(<Settings />);
+    fireEvent.click(await screen.findByRole("link", { name: "Atalho" }));
+    fireEvent.click(screen.getByRole("button", { name: "Alterar" }));
+    await screen.findByText("Pressione a nova combinação… (Esc cancela)");
+    // Alt segurado com Shift no meio, depois um Alt sozinho: nenhum toque duplo.
+    fireEvent.keyDown(document, { key: "Alt", code: "AltLeft", altKey: true });
+    fireEvent.keyDown(document, { key: "Shift", code: "ShiftLeft", altKey: true, shiftKey: true });
+    fireEvent.keyUp(document, { key: "Shift", code: "ShiftLeft", altKey: true });
+    fireEvent.keyUp(document, { key: "Alt", code: "AltLeft" });
+    fireEvent.keyDown(document, { key: "Alt", code: "AltLeft", altKey: true });
+    expect(callsFor("set_config")).toHaveLength(0);
+    expect(screen.getByText("Pressione a nova combinação… (Esc cancela)")).toBeInTheDocument();
+    fireEvent.keyDown(document, { key: "Escape", code: "Escape" });
     await waitFor(() => expect(callsFor("suspend_hotkey").at(-1)?.args).toEqual({ suspended: false }));
   });
 

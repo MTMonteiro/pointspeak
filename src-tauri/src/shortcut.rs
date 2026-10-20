@@ -1,13 +1,16 @@
 //! Atalho global (`tauri-plugin-global-shortcut`): conversão do [`Accelerator`] do núcleo e registro.
+//! O toque duplo num modificador (`Alt+Alt`) não passa pelo plugin: é o hook de teclado do
+//! `double_tap.rs` (só Windows). Os dois são um [`Target`] do [`HotkeyBinding`].
 //!
 //! O plugin roda cada registro na thread principal e bloqueia até ela responder. Por isso
 //! [`HotkeyBinding`] só é usado na thread principal (`setup`, `set_config` síncrono e as tarefas que
 //! o executor do ditado posta com `run_on_main_thread`): um lock dele segurado fora dela poderia
 //! travar com a thread principal esperando o mesmo lock.
 
+use std::fmt;
 use std::sync::Mutex;
 
-use pointspeak_core::hotkey::Accelerator;
+use pointspeak_core::hotkey::{Accelerator, Hotkey, ModifierKey};
 use tauri::{AppHandle, Runtime, State};
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut};
 
@@ -135,10 +138,32 @@ fn function_key(key: &str) -> Option<Code> {
     F.get(n.checked_sub(1)?).copied()
 }
 
-/// Atalho em texto (`config.hotkey`) → atalho do plugin, com o erro do parser em PT-BR.
-pub fn parse(hotkey: &str) -> Result<Shortcut, String> {
-    let accelerator = Accelerator::parse(hotkey).map_err(|e| e.to_string())?;
-    to_shortcut(&accelerator).ok_or_else(|| format!("Tecla não reconhecida no atalho: {hotkey}"))
+/// O que fica registrado no SO para o atalho do ditado.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Target {
+    /// Combinação, pelo plugin de atalho global.
+    Shortcut(Shortcut),
+    /// Toque duplo no modificador, pelo hook de teclado (`double_tap.rs`).
+    DoubleTap(ModifierKey),
+}
+
+impl fmt::Display for Target {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Target::Shortcut(shortcut) => f.write_str(&shortcut.into_string()),
+            Target::DoubleTap(key) => write!(f, "{0}+{0}", key.label()),
+        }
+    }
+}
+
+/// Atalho em texto (`config.hotkey`) → o que registrar, com o erro do parser em PT-BR.
+pub fn parse(hotkey: &str) -> Result<Target, String> {
+    match Hotkey::parse(hotkey).map_err(|e| e.to_string())? {
+        Hotkey::Combo(accelerator) => to_shortcut(&accelerator)
+            .map(Target::Shortcut)
+            .ok_or_else(|| format!("Tecla não reconhecida no atalho: {hotkey}")),
+        Hotkey::DoubleTap(key) => Ok(Target::DoubleTap(key)),
+    }
 }
 
 /// Mensagem do `set_config` quando o SO recusa o atalho.
@@ -148,21 +173,29 @@ pub fn conflict_message(hotkey: &str) -> String {
 
 /// Registro no SO, separado do [`HotkeyBinding`] para os testes usarem um fake.
 pub trait Registrar {
-    fn register(&self, shortcut: Shortcut) -> Result<(), String>;
-    fn unregister(&self, shortcut: Shortcut) -> Result<(), String>;
+    fn register(&self, target: Target) -> Result<(), String>;
+    fn unregister(&self, target: Target) -> Result<(), String>;
 }
 
 impl<R: Runtime> Registrar for AppHandle<R> {
-    fn register(&self, shortcut: Shortcut) -> Result<(), String> {
-        self.global_shortcut()
-            .register(shortcut)
-            .map_err(|e| e.to_string())
+    fn register(&self, target: Target) -> Result<(), String> {
+        match target {
+            Target::Shortcut(shortcut) => self
+                .global_shortcut()
+                .register(shortcut)
+                .map_err(|e| e.to_string()),
+            Target::DoubleTap(key) => crate::double_tap::set_target(Some(key)),
+        }
     }
 
-    fn unregister(&self, shortcut: Shortcut) -> Result<(), String> {
-        self.global_shortcut()
-            .unregister(shortcut)
-            .map_err(|e| e.to_string())
+    fn unregister(&self, target: Target) -> Result<(), String> {
+        match target {
+            Target::Shortcut(shortcut) => self
+                .global_shortcut()
+                .unregister(shortcut)
+                .map_err(|e| e.to_string()),
+            Target::DoubleTap(_) => crate::double_tap::set_target(None),
+        }
     }
 }
 
@@ -175,7 +208,7 @@ pub struct HotkeyBinding {
 
 #[derive(Default)]
 struct Binding {
-    wanted: Option<Shortcut>,
+    wanted: Option<Target>,
     registered: bool,
     paused: bool,
     suspended: bool,
@@ -188,7 +221,7 @@ impl HotkeyBinding {
     pub fn rebind(
         &self,
         registrar: &impl Registrar,
-        shortcut: Shortcut,
+        shortcut: Target,
         label: &str,
     ) -> Result<(), String> {
         let mut b = self.lock();
@@ -201,7 +234,11 @@ impl HotkeyBinding {
         }
         registrar.register(shortcut).map_err(|e| {
             log::warn!("atalho {label} recusado: {e}");
-            conflict_message(label)
+            match shortcut {
+                Target::Shortcut(_) => conflict_message(label),
+                // O hook não tem conflito: o erro já diz o motivo (ex.: só no Windows).
+                Target::DoubleTap(_) => e,
+            }
         })?;
         if b.suspended {
             if let Err(e) = registrar.unregister(shortcut) {
@@ -252,7 +289,7 @@ impl HotkeyBinding {
     }
 
     /// O atalho desejado é este (para ignorar eventos de outro atalho registrado por engano).
-    pub fn is_current(&self, shortcut: &Shortcut) -> bool {
+    pub fn is_current(&self, shortcut: &Target) -> bool {
         self.lock().wanted.as_ref() == Some(shortcut)
     }
 
@@ -302,6 +339,10 @@ mod tests {
 
     fn shortcut(text: &str) -> Shortcut {
         to_shortcut(&Accelerator::parse(text).unwrap()).unwrap()
+    }
+
+    fn target(text: &str) -> Target {
+        parse(text).unwrap()
     }
 
     #[test]
@@ -381,33 +422,29 @@ mod tests {
     /// Fake do SO: registra o que foi pedido e recusa os atalhos de `taken`.
     #[derive(Default)]
     struct FakeOs {
-        taken: Vec<Shortcut>,
-        registered: RefCell<Vec<Shortcut>>,
+        taken: Vec<Target>,
+        registered: RefCell<Vec<Target>>,
         calls: RefCell<Vec<String>>,
     }
 
     impl Registrar for FakeOs {
-        fn register(&self, shortcut: Shortcut) -> Result<(), String> {
-            self.calls
-                .borrow_mut()
-                .push(format!("+{}", shortcut.into_string()));
-            if self.taken.contains(&shortcut) {
+        fn register(&self, target: Target) -> Result<(), String> {
+            self.calls.borrow_mut().push(format!("+{target}"));
+            if self.taken.contains(&target) {
                 return Err("HotKey already registered".into());
             }
-            self.registered.borrow_mut().push(shortcut);
+            self.registered.borrow_mut().push(target);
             Ok(())
         }
-        fn unregister(&self, shortcut: Shortcut) -> Result<(), String> {
-            self.calls
-                .borrow_mut()
-                .push(format!("-{}", shortcut.into_string()));
-            self.registered.borrow_mut().retain(|s| *s != shortcut);
+        fn unregister(&self, target: Target) -> Result<(), String> {
+            self.calls.borrow_mut().push(format!("-{target}"));
+            self.registered.borrow_mut().retain(|s| *s != target);
             Ok(())
         }
     }
 
     impl FakeOs {
-        fn registered(&self) -> Vec<Shortcut> {
+        fn registered(&self) -> Vec<Target> {
             self.registered.borrow().clone()
         }
     }
@@ -416,72 +453,89 @@ mod tests {
     fn suspend_releases_and_restores_the_hotkey() {
         let os = FakeOs::default();
         let binding = HotkeyBinding::default();
-        binding.rebind(&os, shortcut("Alt+Z"), "Alt+Z").unwrap();
+        binding.rebind(&os, target("Alt+Z"), "Alt+Z").unwrap();
         binding.suspend(&os, true).unwrap();
         assert!(os.registered().is_empty());
         // Suspender de novo não solta duas vezes.
         binding.suspend(&os, true).unwrap();
         binding.suspend(&os, false).unwrap();
-        assert_eq!(os.registered(), [shortcut("Alt+Z")]);
+        assert_eq!(os.registered(), [target("Alt+Z")]);
         assert_eq!(os.calls.borrow().len(), 3);
-        assert!(binding.is_current(&shortcut("Alt+Z")));
+        assert!(binding.is_current(&target("Alt+Z")));
     }
 
     #[test]
     fn suspend_and_pause_are_independent() {
         let os = FakeOs::default();
         let binding = HotkeyBinding::default();
-        binding.rebind(&os, shortcut("Alt+Z"), "Alt+Z").unwrap();
+        binding.rebind(&os, target("Alt+Z"), "Alt+Z").unwrap();
         binding.pause(&os);
         binding.suspend(&os, true).unwrap();
         // Fim da captura com o ditado pausado: segue solto até o `resume`.
         binding.suspend(&os, false).unwrap();
         assert!(os.registered().is_empty());
         binding.resume(&os);
-        assert_eq!(os.registered(), [shortcut("Alt+Z")]);
+        assert_eq!(os.registered(), [target("Alt+Z")]);
         // Retomar durante a captura não registra; o fim da captura registra.
         binding.suspend(&os, true).unwrap();
         binding.pause(&os);
         binding.resume(&os);
         assert!(os.registered().is_empty());
         binding.suspend(&os, false).unwrap();
-        assert_eq!(os.registered(), [shortcut("Alt+Z")]);
+        assert_eq!(os.registered(), [target("Alt+Z")]);
     }
 
     #[test]
     fn rebind_while_suspended_checks_conflict_and_stays_released() {
         let os = FakeOs {
-            taken: vec![shortcut("Ctrl+Space")],
+            taken: vec![target("Ctrl+Space")],
             ..FakeOs::default()
         };
         let binding = HotkeyBinding::default();
-        binding.rebind(&os, shortcut("Alt+Z"), "Alt+Z").unwrap();
+        binding.rebind(&os, target("Alt+Z"), "Alt+Z").unwrap();
         binding.suspend(&os, true).unwrap();
         assert_eq!(
             binding
-                .rebind(&os, shortcut("Ctrl+Space"), "Ctrl+Space")
+                .rebind(&os, target("Ctrl+Space"), "Ctrl+Space")
                 .unwrap_err(),
             conflict_message("Ctrl+Space")
         );
-        binding.rebind(&os, shortcut("Alt+X"), "Alt+X").unwrap();
+        binding.rebind(&os, target("Alt+X"), "Alt+X").unwrap();
         assert!(os.registered().is_empty());
         binding.suspend(&os, false).unwrap();
-        assert_eq!(os.registered(), [shortcut("Alt+X")]);
+        assert_eq!(os.registered(), [target("Alt+X")]);
     }
 
     #[test]
     fn conflict_keeps_the_old_hotkey() {
         let os = FakeOs {
-            taken: vec![shortcut("Ctrl+Space")],
+            taken: vec![target("Ctrl+Space")],
             ..FakeOs::default()
         };
         let binding = HotkeyBinding::default();
-        binding.rebind(&os, shortcut("Alt+Z"), "Alt+Z").unwrap();
+        binding.rebind(&os, target("Alt+Z"), "Alt+Z").unwrap();
         assert!(binding
-            .rebind(&os, shortcut("Ctrl+Space"), "Ctrl+Space")
+            .rebind(&os, target("Ctrl+Space"), "Ctrl+Space")
             .is_err());
-        assert_eq!(os.registered(), [shortcut("Alt+Z")]);
-        assert!(binding.is_current(&shortcut("Alt+Z")));
+        assert_eq!(os.registered(), [target("Alt+Z")]);
+        assert!(binding.is_current(&target("Alt+Z")));
+    }
+
+    #[test]
+    fn double_tap_targets_bind_like_shortcuts() {
+        assert_eq!(target("Alt+Alt"), Target::DoubleTap(ModifierKey::Alt));
+        assert_eq!(target("Alt+Alt").to_string(), "Alt+Alt");
+        let os = FakeOs::default();
+        let binding = HotkeyBinding::default();
+        binding.rebind(&os, target("Alt+Z"), "Alt+Z").unwrap();
+        binding
+            .rebind(&os, target("Ctrl+Ctrl"), "Ctrl+Ctrl")
+            .unwrap();
+        assert_eq!(os.registered(), [target("Ctrl+Ctrl")]);
+        binding.pause(&os);
+        assert!(os.registered().is_empty());
+        binding.resume(&os);
+        assert_eq!(os.registered(), [target("Ctrl+Ctrl")]);
     }
 
     #[test]

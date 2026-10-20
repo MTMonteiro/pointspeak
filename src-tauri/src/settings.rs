@@ -67,14 +67,20 @@ fn payload<R: Runtime>(
         let backend = effective_backend(config.backend, &options, &engines);
         transcriber::runtime(app, EngineKey { model, backend })
     });
-    engine_status(
+    let mut payload = engine_status(
         &config,
         status,
         paused,
         &options,
         &engines,
         runtime.as_ref(),
-    )
+    );
+    match status {
+        ModelStatus::Failed => payload.load_error = transcriber::load_error(app),
+        ModelStatus::Loading => payload.load_progress = transcriber::load_progress(app),
+        _ => {}
+    }
+    payload
 }
 
 /// Emite `engine://status` para a janela `settings`.

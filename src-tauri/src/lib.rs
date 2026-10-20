@@ -16,10 +16,12 @@ use tauri_plugin_global_shortcut::ShortcutState;
 pub mod audio;
 mod config;
 pub mod dictation;
+mod double_tap;
 pub mod hud;
 pub mod injector;
 pub mod models;
 pub mod onnx;
+pub mod onnx_parakeet;
 pub mod onnx_whisper;
 pub mod settings;
 pub mod shortcut;
@@ -44,6 +46,12 @@ pub struct AppState {
     /// O que a engine carregada roda de fato (backend e fallback), fora do lock do `transcriber`
     /// para o `engine://status` não esperar uma transcrição.
     pub engine_runtime: Mutex<Option<(EngineKey, EngineRuntime)>>,
+    /// Último uso da engine (carga ou transcrição), para soltá-la depois de `unloadIdleMins`.
+    pub engine_last_use: Mutex<Option<Instant>>,
+    /// Erro da última carga que falhou (vai no `loadError` do `engine://status`).
+    pub engine_load_error: Mutex<Option<String>>,
+    /// Carga do modelo em andamento (porcentagem e etapa; `transcriber::load_progress`).
+    pub engine_load_progress: Mutex<Option<pointspeak_core::load_progress::LoadProgress>>,
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -104,6 +112,7 @@ pub fn run() {
                 settings::TauriMicSink(handle.clone()),
             ));
 
+            double_tap::init(handle);
             let config = app.state::<AppState>().config.lock().unwrap().clone();
             let backend = dictation::TauriBackend::new(handle.clone(), display);
             app.manage(dictation::spawn(
@@ -123,6 +132,7 @@ pub fn run() {
                 Err(e) => eprintln!("[pointspeak] atalho inválido: {e}"),
             }
             dictation::reload_model(handle);
+            dictation::spawn_idle_release(handle);
             Ok(())
         })
         .on_window_event(|window, event| {

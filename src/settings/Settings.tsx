@@ -57,6 +57,7 @@ const DEFAULT_CONFIG: AppConfig = {
   backend: "auto",
   maxRecordingSecs: 300,
   outputMode: "paste",
+  unloadIdleMins: 0,
 };
 
 const INVALID_HOTKEY = "Use ao menos um modificador (Ctrl, Alt, Shift ou Super) com uma tecla.";
@@ -125,6 +126,17 @@ function acceleratorFromEvent(event: KeyboardEvent): { key: string; shortcut: st
   return { key, shortcut: [...modifiers, key].join("+"), hasModifier: modifiers.length > 0 };
 }
 
+/** Modifiers that accept a double tap as the hotkey (`Alt+Alt`); Super/Meta opens the Start menu. */
+const DOUBLE_TAP_KEYS: Record<string, string> = { Control: "Ctrl", Alt: "Alt", Shift: "Shift" };
+/** Max hold of a tap and max gap between the two taps, as in the Rust `DoubleTapDetector`. */
+const DOUBLE_TAP_MS = 400;
+
+/** `Alt+Alt` → `Alt`; a combination → undefined. */
+function doubleTapKey(hotkey: string): string | undefined {
+  const [first, second, ...rest] = hotkey.split("+");
+  return rest.length === 0 && first !== undefined && first === second && Object.values(DOUBLE_TAP_KEYS).includes(first) ? first : undefined;
+}
+
 function Icon({ section }: { section: SectionId | "brand" }) {
   const common = { fill: "none", stroke: "currentColor", strokeWidth: 1.4, strokeLinecap: "round" as const, strokeLinejoin: "round" as const };
   if (section === "brand") {
@@ -149,18 +161,25 @@ function Icon({ section }: { section: SectionId | "brand" }) {
 }
 
 function EngineStatusView({ status }: { status: EngineStatus | null }) {
-  let text = "Carregando modelo…";
+  let text = status?.loadProgress
+    ? `Carregando modelo… ${status.loadProgress.percent}% · ${status.loadProgress.stage}`
+    : "Carregando modelo…";
   let tone = "loading";
   if (status?.status === "notSelected") {
     text = "Nenhum modelo ativo";
     tone = "warning";
   } else if (status?.status === "failed") {
-    text = "Ditado indisponível";
+    text = status.loadError ? `Ditado indisponível: ${status.loadError}` : "Ditado indisponível";
     tone = "error";
   } else if (status?.status === "loaded") {
     text = status.paused
       ? "Pausado"
       : `Pronto · ${status.model ?? "modelo"} · ${engineBackendLabel(status)}`;
+    tone = status.paused ? "warning" : "ready";
+  } else if (status?.status === "released") {
+    text = status.paused
+      ? "Pausado"
+      : `Pronto · ${status.model ?? "modelo"} · memória liberada (carrega ao ditar)`;
     tone = status.paused ? "warning" : "ready";
   }
   return (
@@ -397,6 +416,20 @@ export function Settings() {
         return;
       }
       setCaptureActive(true);
+      const commit = (hotkey: string) => {
+        removeCaptureListener();
+        setCaptureActive(false);
+        void (async () => {
+          try {
+            await update({ hotkey });
+          } finally {
+            await releaseHotkey();
+          }
+        })();
+      };
+      // Double tap of a modifier: the press being held and the last clean tap (no other key).
+      let held: { key: string; at: number; clean: boolean } | undefined;
+      let lastTap: { key: string; at: number } | undefined;
       const onKeyDown = (event: KeyboardEvent) => {
         if (event.repeat) return;
         if (event.key === "Escape" || event.code === "Escape") {
@@ -404,7 +437,20 @@ export function Settings() {
           void finishCapture();
           return;
         }
-        if (["Control", "Alt", "Shift", "Meta"].includes(event.key)) return;
+        if (["Control", "Alt", "Shift", "Meta"].includes(event.key)) {
+          const tapKey = DOUBLE_TAP_KEYS[event.key];
+          if (held) held.clean = false;
+          if (tapKey && lastTap?.key === tapKey && event.timeStamp - lastTap.at <= DOUBLE_TAP_MS) {
+            event.preventDefault();
+            commit(`${tapKey}+${tapKey}`);
+            return;
+          }
+          held = tapKey ? { key: tapKey, at: event.timeStamp, clean: true } : undefined;
+          lastTap = undefined;
+          return;
+        }
+        if (held) held.clean = false;
+        lastTap = undefined;
         const candidate = acceleratorFromEvent(event);
         if (!candidate) return;
         event.preventDefault();
@@ -412,18 +458,21 @@ export function Settings() {
           void finishCapture({ message: INVALID_HOTKEY, tone: "error" });
           return;
         }
-        removeCaptureListener();
-        setCaptureActive(false);
-        void (async () => {
-          try {
-            await update({ hotkey: candidate.shortcut });
-          } finally {
-            await releaseHotkey();
-          }
-        })();
+        commit(candidate.shortcut);
+      };
+      const onKeyUp = (event: KeyboardEvent) => {
+        const tapKey = DOUBLE_TAP_KEYS[event.key];
+        const tapped = tapKey !== undefined && held?.key === tapKey && held.clean && event.timeStamp - held.at <= DOUBLE_TAP_MS;
+        lastTap = tapped ? { key: tapKey, at: event.timeStamp } : undefined;
+        held = undefined;
+        if (tapKey) event.preventDefault();
       };
       document.addEventListener("keydown", onKeyDown);
-      captureListenerCleanup.current = () => document.removeEventListener("keydown", onKeyDown);
+      document.addEventListener("keyup", onKeyUp);
+      captureListenerCleanup.current = () => {
+        document.removeEventListener("keydown", onKeyDown);
+        document.removeEventListener("keyup", onKeyUp);
+      };
       if (activeSectionRef.current !== "atalho") void finishCapture();
     } catch (error) {
       if (mounted.current) setCaptureError({ message: errorMessage(error), tone: "error" });
@@ -516,6 +565,7 @@ export function Settings() {
               error={errors.backend}
               engineStatus={engineStatus}
               onBackendChange={(backend) => void update({ backend })}
+              onUnloadIdleChange={(unloadIdleMins) => void update({ unloadIdleMins })}
               onRefreshEngineStatus={refreshEngineStatus}
             />
           </section>
@@ -523,6 +573,11 @@ export function Settings() {
           <section className="settings-section" id="idioma" aria-labelledby="section-idioma" hidden={activeSection !== "idioma"}>
             <h2 id="section-idioma">Idioma</h2>
             <p className="settings-lead">Em que idioma você dita.</p>
+            {value.model === "parakeet-tdt-0.6b-v3" && (
+              <Callout tone="info">
+                <p>O Parakeet detecta o idioma sozinho (25 línguas, entre elas português e inglês): esta opção vale só para os modelos Whisper.</p>
+              </Callout>
+            )}
             <Segmented<Language>
               name="language"
               legend="Idioma do ditado"
@@ -783,7 +838,15 @@ function HotkeySection({
             <p className="settings-error-text" id={invalidId} role="alert">{configErrors.hotkey}</p>
           )
         )}
-        {!captureActive && !captureError && !configErrors.hotkey && <p className="settings-hint">Padrão: Alt+Z.</p>}
+        {!captureActive && !captureError && !configErrors.hotkey && (
+          doubleTapKey(config.hotkey) ? (
+            <p className="settings-hint">
+              Toque duas vezes rápido em {doubleTapKey(config.hotkey)}. No modo Segurar para falar, segure o segundo toque enquanto fala.
+            </p>
+          ) : (
+            <p className="settings-hint">Padrão: Alt+Z. Também dá para usar dois toques rápidos em Ctrl, Alt ou Shift (ex.: Alt+Alt).</p>
+          )
+        )}
       </div>
 
       <fieldset className="settings-radio-list">

@@ -16,7 +16,7 @@ export type AudioLevelPayload = {
 };
 
 /** Mirrors the Rust `AppConfig` serde contract (`rename_all = "camelCase"`). */
-export type ModelId = "tiny" | "base" | "small" | "large-v3-turbo";
+export type ModelId = "tiny" | "base" | "small" | "large-v3-turbo" | "parakeet-tdt-0.6b-v3";
 export type Language = "pt" | "en" | "auto";
 export type HotkeyMode = "pushToTalk" | "toggle";
 export type Backend = "auto" | "cpu" | "directml" | "openvino" | "cuda" | "vulkan";
@@ -34,6 +34,8 @@ export type AppConfig = {
   backend: Backend;
   maxRecordingSecs: number;
   outputMode: OutputMode;
+  /** Minutes without dictation before the model leaves memory (0 = never). */
+  unloadIdleMins: number;
 };
 
 /** Shape returned by `list_microphones` (Rust `MicrophoneInfo`). */
@@ -55,7 +57,8 @@ export const DML_DEVICE_LABELS: Record<DmlDevice, string> = { npu: "NPU", gpu: "
 /** Mirrors `EngineStatusPayload`, shared by `get_engine_status` and `engine://status`. */
 export type EngineStatus = {
   model: ModelId | null;
-  status: "notSelected" | "loading" | "loaded" | "failed";
+  /** `released`: the model left memory after `unloadIdleMins`; the next dictation loads it again. */
+  status: "notSelected" | "loading" | "loaded" | "failed" | "released";
   /** Backend that really runs (CPU after a fallback). */
   backend: Backend;
   paused: boolean;
@@ -65,6 +68,22 @@ export type EngineStatus = {
   device?: DmlDevice;
   /** Only when the NPU failed and the GPU took over (informative, PT-BR). */
   deviceFallbackReason?: string;
+  /** Only with `status: "failed"`: why the model did not load (PT-BR, e.g. not enough free memory). */
+  loadError?: string;
+  /** Only with `status: "loading"`, once the load started: estimated percent and current stage. */
+  loadProgress?: LoadProgress;
+};
+
+/** Mirrors `LoadProgressPayload`: the percent is an estimate (stage + time of the last equal load) and stops at 95. */
+export type LoadProgress = {
+  percent: number;
+  /** Current stage (PT-BR, e.g. "abrindo o decoder"). */
+  stage: string;
+  elapsedSecs: number;
+  /** Expected duration of the whole load, when known. */
+  expectedSecs?: number;
+  /** First OpenVINO compile of the encoder (can take minutes). */
+  compiling: boolean;
 };
 
 export type ModelState =

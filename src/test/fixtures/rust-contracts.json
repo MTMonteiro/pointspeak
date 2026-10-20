@@ -9,7 +9,8 @@
     "microphone": "USB Microphone",
     "model": "tiny",
     "outputMode": "clipboard",
-    "silenceTimeoutMs": 2500
+    "silenceTimeoutMs": 2500,
+    "unloadIdleMins": 15
   },
   "audioLevel": {
     "level": 0.625
@@ -47,12 +48,32 @@
     "paused": false,
     "status": "loaded"
   },
+  "engineStatusFailed": {
+    "backend": "cpu",
+    "loadError": "Pouca memória livre para carregar o modelo: precisa de cerca de 7,8 GB e há 3,8 GB livres. Feche alguns programas ou escolha um modelo menor.",
+    "model": "tiny",
+    "paused": false,
+    "status": "failed"
+  },
   "engineStatusFallback": {
     "backend": "cpu",
     "fallbackReason": "DirectML não iniciou: provider indisponível",
     "model": "tiny",
     "paused": false,
     "status": "loaded"
+  },
+  "engineStatusLoading": {
+    "backend": "openvino",
+    "loadProgress": {
+      "compiling": true,
+      "elapsedSecs": 170,
+      "expectedSecs": 850,
+      "percent": 20,
+      "stage": "compilando o encoder (só na 1ª vez)"
+    },
+    "model": "tiny",
+    "paused": false,
+    "status": "loading"
   },
   "engineStatusNpuToGpu": {
     "backend": "directml",
@@ -61,6 +82,12 @@
     "model": "tiny",
     "paused": false,
     "status": "loaded"
+  },
+  "engineStatusReleased": {
+    "backend": "cpu",
+    "model": "tiny",
+    "paused": false,
+    "status": "released"
   },
   "modelFailedProgress": {
     "done": 0,
@@ -120,6 +147,16 @@
         "sha256": "1fc70f774d38eb169993ac391eea357ef47c88757ef72ee5943879b7e8e2bc69",
         "sizeBytes": 1624555275,
         "state": "failed"
+      },
+      {
+        "description": "Rápido até na CPU; idioma automático (25 línguas)",
+        "displaySize": "640 MB",
+        "fileName": "parakeet-tdt-0.6b-v3-int8",
+        "id": "parakeet-tdt-0.6b-v3",
+        "recommended": false,
+        "sha256": "",
+        "sizeBytes": 670619706,
+        "state": "notDownloaded"
       }
     ],
     "usedBytes": 77691713
@@ -129,49 +166,59 @@
     "models": [
       {
         "description": "Mais rápido, menos preciso",
-        "displaySize": "75 MB",
+        "displaySize": "128 MB",
         "fileName": "onnx-tiny",
         "id": "tiny",
         "recommended": false,
         "sha256": "",
-        "sizeBytes": 77184276,
+        "sizeBytes": 134146253,
         "state": "active"
       },
       {
         "description": "Equilíbrio, recomendado",
-        "displaySize": "142 MB",
+        "displaySize": "234 MB",
         "done": 44385440,
         "fileName": "onnx-base",
         "id": "base",
         "recommended": true,
         "sha256": "",
-        "sizeBytes": 147131618,
+        "sizeBytes": 245166827,
         "state": "downloading",
         "total": 147951465
       },
       {
         "description": "Mais preciso, mais lento",
-        "displaySize": "466 MB",
+        "displaySize": "731 MB",
         "fileName": "onnx-small",
         "id": "small",
         "recommended": false,
         "sha256": "",
-        "sizeBytes": 486262020,
+        "sizeBytes": 765740183,
         "state": "notDownloaded"
       },
       {
         "description": "O mais preciso; pede GPU/NPU",
-        "displaySize": "1,6 GB",
+        "displaySize": "1,9 GB",
         "fileName": "onnx-large-v3-turbo",
         "id": "large-v3-turbo",
         "reason": "Download falhou: conexão perdida",
         "recommended": false,
         "sha256": "",
-        "sizeBytes": 1619641148,
+        "sizeBytes": 1937412905,
         "state": "failed"
+      },
+      {
+        "description": "Rápido até na CPU; idioma automático (25 línguas)",
+        "displaySize": "640 MB",
+        "fileName": "parakeet-tdt-0.6b-v3-int8",
+        "id": "parakeet-tdt-0.6b-v3",
+        "recommended": false,
+        "sha256": "",
+        "sizeBytes": 670619706,
+        "state": "notDownloaded"
       }
     ],
-    "usedBytes": 77184276
+    "usedBytes": 134146253
   },
   "stateChanged": {
     "anchor": "end",

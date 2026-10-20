@@ -1,7 +1,7 @@
-import { act, fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it } from "vitest";
 import { Settings } from "./Settings";
-import { emitTauriEvent, setInvokeHandler } from "../test/tauri-mock";
+import { emitTauriEvent, getInvokeCallsFor, setInvokeHandler } from "../test/tauri-mock";
 
 const CONFIG = {
   microphone: null,
@@ -13,6 +13,7 @@ const CONFIG = {
   silenceTimeoutMs: 2500,
   backend: "directml",
   maxRecordingSecs: 300,
+  unloadIdleMins: 0,
 };
 
 const ENGINE_NPU = {
@@ -85,5 +86,146 @@ describe("DirectML: NPU ou GPU", () => {
     expect(await screen.findByText(/O PointSpeak está usando a CPU\. Motivo: DirectML não iniciou: 0x887A0004/)).toBeInTheDocument();
     expect(screen.queryByText(/Em uso agora/)).not.toBeInTheDocument();
     expect(screen.getByText("Pronto · large-v3-turbo · CPU")).toBeInTheDocument();
+  });
+});
+
+describe("liberar a memória do modelo", () => {
+  it("salva o tempo escolhido e mostra no rodapé quando o modelo foi liberado", async () => {
+    mockTauri({ ...ENGINE_NPU, status: "released" });
+    await openHardware();
+    expect(await screen.findByText("Pronto · large-v3-turbo · memória liberada (carrega ao ditar)")).toBeInTheDocument();
+    const select = screen.getByLabelText("Liberar a memória do modelo");
+    expect(select).toHaveValue("0");
+    fireEvent.change(select, { target: { value: "15" } });
+    await waitFor(() => expect(getInvokeCallsFor("set_config").map((call) => (call.args?.config as { unloadIdleMins: number }).unloadIdleMins)).toEqual([15]));
+  });
+
+  it("aceita um tempo personalizado e recusa o que está fora de 1 a 1440 minutos", async () => {
+    mockTauri(ENGINE_NPU);
+    await openHardware();
+    const savedMinutes = () => getInvokeCallsFor("set_config").map((call) => (call.args?.config as { unloadIdleMins: number }).unloadIdleMins);
+    expect(screen.queryByLabelText("Minutos sem uso até liberar")).not.toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("Liberar a memória do modelo"), { target: { value: "custom" } });
+    const minutes = await screen.findByLabelText("Minutos sem uso até liberar");
+    expect(savedMinutes()).toEqual([]);
+
+    fireEvent.change(minutes, { target: { value: "2000" } });
+    fireEvent.blur(minutes);
+    expect(await screen.findByText("Digite um número inteiro de minutos, de 1 a 1440 (24 horas).")).toBeInTheDocument();
+    expect(savedMinutes()).toEqual([]);
+
+    fireEvent.change(minutes, { target: { value: "90" } });
+    fireEvent.keyDown(minutes, { key: "Enter" });
+    await waitFor(() => expect(savedMinutes()).toEqual([90]));
+    expect(screen.getByLabelText("Liberar a memória do modelo")).toHaveValue("custom");
+    expect(screen.getByLabelText("Minutos sem uso até liberar")).toHaveValue(90);
+
+    fireEvent.change(screen.getByLabelText("Liberar a memória do modelo"), { target: { value: "5" } });
+    await waitFor(() => expect(savedMinutes()).toEqual([90, 5]));
+    expect(screen.queryByLabelText("Minutos sem uso até liberar")).not.toBeInTheDocument();
+  });
+});
+
+describe("modelo ativo sem o formato do modo escolhido", () => {
+  const TINY = {
+    id: "tiny",
+    fileName: "onnx-tiny",
+    sizeBytes: 134146253,
+    sha256: "",
+    displaySize: "128 MB",
+    description: "Mais rápido, menos preciso",
+    recommended: false,
+  };
+
+  function mockMissing(initial: Record<string, unknown>) {
+    let state = initial;
+    setInvokeHandler((command, args) => {
+      // Como no app: depois do `download_model` a lista responde `downloading`.
+      if (command === "download_model") {
+        state = { state: "downloading", done: 0, total: TINY.sizeBytes };
+        return undefined;
+      }
+      if (command === "get_config") return { ...CONFIG, model: "tiny" };
+      if (command === "set_config") return args?.config;
+      if (command === "list_microphones") return [];
+      if (command === "get_engine_status") return {
+        model: "tiny",
+        status: "loaded",
+        backend: "cpu",
+        paused: false,
+        fallbackReason: "Modelo tiny para ONNX não baixado",
+      };
+      if (command === "list_models") return { models: [{ ...TINY, ...state }], dir: "/models", usedBytes: 0 };
+      if (command === "list_backends") return BACKENDS;
+      return undefined;
+    });
+  }
+
+  it("oferece baixar o formato que falta e dispara o download", async () => {
+    mockMissing({ state: "notDownloaded" });
+    await openHardware();
+    expect(await screen.findByText(/NPU \(DirectML\) usa outro formato do modelo tiny, que ainda não foi baixado \(128 MB\)/)).toBeInTheDocument();
+    // O aviso genérico de CPU dá lugar ao do modelo.
+    expect(screen.queryByText(/A aceleração NPU \(DirectML\) não iniciou/)).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Baixar agora (128 MB)" }));
+    await waitFor(() => expect(getInvokeCallsFor("download_model").map((call) => call.args)).toEqual([{ id: "tiny" }]));
+    act(() => emitTauriEvent("models://progress", { id: "tiny", state: "downloading", done: 67073127, total: 134146253 }));
+    expect(await screen.findByText(/Baixando o modelo tiny para NPU \(DirectML\)… 50%/)).toBeInTheDocument();
+  });
+
+  it("sem aviso quando o modelo ativo já tem o formato", async () => {
+    mockMissing({ state: "active" });
+    await openHardware();
+    expect(await screen.findByText(/O PointSpeak está usando a CPU/)).toBeInTheDocument();
+    expect(screen.queryByText(/usa outro formato do modelo/)).not.toBeInTheDocument();
+  });
+});
+
+describe("OpenVINO: NPU ou GPU", () => {
+  it("mostra a NPU do OpenVINO em uso no rodapé e na seção Hardware", async () => {
+    mockTauri({ ...ENGINE_NPU, backend: "openvino" });
+    await openHardware();
+    expect(await screen.findByText("Pronto · large-v3-turbo · OpenVINO · NPU")).toBeInTheDocument();
+    expect(screen.getByText("Em uso agora: OpenVINO · NPU")).toBeInTheDocument();
+  });
+
+  function mockLoading(loadProgress: Record<string, unknown>) {
+    setInvokeHandler((command, args) => {
+      if (command === "get_config") return { ...CONFIG, backend: "openvino" };
+      if (command === "set_config") return args?.config;
+      if (command === "list_microphones") return [];
+      if (command === "get_engine_status") return { model: "large-v3-turbo", status: "loading", backend: "openvino", paused: false, loadProgress };
+      if (command === "list_models") return { models: [], dir: "/models", usedBytes: 0 };
+      if (command === "list_backends") return BACKENDS;
+      return undefined;
+    });
+  }
+
+  it("avisa que a primeira carga do OpenVINO compila para a NPU, com o progresso estimado", async () => {
+    mockLoading({ percent: 20, stage: "compilando o encoder (só na 1ª vez)", elapsedSecs: 170, expectedSecs: 850, compiling: true });
+    await openHardware();
+    expect(await screen.findByText(/compila o modelo para a NPU/)).toBeInTheDocument();
+    expect(screen.getByRole("progressbar", { name: "Preparação do OpenVINO" })).toHaveAttribute("aria-valuenow", "20");
+    expect(screen.getByText("20% · 3 min de cerca de 14 min (estimativa)")).toBeInTheDocument();
+    expect(screen.getByText("Carregando modelo… 20% · compilando o encoder (só na 1ª vez)")).toBeInTheDocument();
+  });
+
+  it("carga comum do OpenVINO mostra a porcentagem só no rodapé", async () => {
+    mockLoading({ percent: 60, stage: "abrindo o decoder", elapsedSecs: 2, expectedSecs: 4, compiling: false });
+    await openHardware();
+    expect(await screen.findByText("Carregando modelo… 60% · abrindo o decoder")).toBeInTheDocument();
+    expect(screen.queryByText(/compila o modelo para a NPU/)).not.toBeInTheDocument();
+  });
+
+  it("NPU que falhou com a GPU assumindo cita o OpenVINO", async () => {
+    mockTauri({
+      ...ENGINE_NPU,
+      backend: "openvino",
+      device: "gpu",
+      deviceFallbackReason: "NPU não iniciou: sem driver. Usando a GPU.",
+    });
+    await openHardware();
+    expect(await screen.findByText("A transcrição continua acelerada pelo OpenVINO. NPU não iniciou: sem driver. Usando a GPU.")).toBeInTheDocument();
+    expect(screen.getByText("Em uso agora: OpenVINO · GPU")).toBeInTheDocument();
   });
 });
