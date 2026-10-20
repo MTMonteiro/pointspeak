@@ -58,6 +58,15 @@ pub struct AppState {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // Antes do GTK: numa sessão Wayland as janelas vão para o XWayland, onde o HUD aparece sem
+    // tirar o foco do app em que a pessoa dita (`hud_layout::gtk_backend_override`).
+    #[cfg(target_os = "linux")]
+    if let Some(backend) =
+        pointspeak_core::hud_layout::gtk_backend_override(|name| std::env::var(name).ok())
+    {
+        std::env::set_var("GDK_BACKEND", backend);
+        eprintln!("[pointspeak] janelas no XWayland (GDK_BACKEND={backend})");
+    }
     tauri::Builder::default()
         // O atalho do config é registrado no `setup` (e trocado no `set_config`); só ele existe.
         .plugin(
